@@ -6,10 +6,10 @@ import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
+import 'package:extended_image/extended_image.dart';
 import '../../providers/photo_provider.dart';
 import '../widgets/video_viewer.dart';
 import '../widgets/photo_viewer.dart';
-
 
 class AssetViewerPage extends StatefulWidget {
   final AssetEntity asset;
@@ -21,7 +21,7 @@ class AssetViewerPage extends StatefulWidget {
 }
 
 class _AssetViewerPageState extends State<AssetViewerPage> {
-  late PageController _pageController;
+  late ExtendedPageController _pageController;
   late int _currentIndex;
   // We keep a local reference to the list to avoid provider shifting issues during view
   late List<AssetEntity> _assets; 
@@ -43,7 +43,7 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
       final index = _assets.indexWhere((e) => e.id == widget.asset.id);
       _currentIndex = index != -1 ? index : 0;
       
-      _pageController = PageController(initialPage: _currentIndex);
+      _pageController = ExtendedPageController(initialPage: _currentIndex);
       _isInit = true;
       
       // Precache neighbors immediately
@@ -136,10 +136,10 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
            ),
         ),
       ),
-      body: PageView.builder(
+      body: ExtendedImageGesturePageView.builder(
         controller: _pageController,
         itemCount: _assets.length,
-        allowImplicitScrolling: true, // Enable preloading of adjacent pages
+        // allowImplicitScrolling: true, // ExtendedImageGesturePageView handles this differently
         onPageChanged: _onPageChanged,
         itemBuilder: (context, index) {
           final asset = _assets[index];

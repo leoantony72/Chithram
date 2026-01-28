@@ -38,13 +38,19 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
   @override
   void didUpdateWidget(PhotoViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.isActive && _allowOriginal) {
-      // Reset to low-res when swiped away to free memory
+    // Whenever the page becomes inactive (swiped away), strictly reset everything.
+    // This ensures that when we come back, the image is at 1.0 scale and low-res.
+    if (!widget.isActive) {
       if (mounted) {
-        setState(() {
-          _allowOriginal = false;
-          _gestureKey.currentState?.reset();
-        });
+        // Reset gesture state (zoom/pan)
+        _gestureKey.currentState?.reset();
+        
+        // Reset resolution state if needed
+        if (_allowOriginal) {
+          setState(() {
+            _allowOriginal = false;
+          });
+        }
       }
     }
   }
@@ -52,7 +58,7 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
   @override
   Widget build(BuildContext context) {
     super.build(context);
-
+    // Check standard build context logic
     final mediaQuery = MediaQuery.of(context);
     final pixelRatio = mediaQuery.devicePixelRatio;
     final targetWidth = (mediaQuery.size.width * pixelRatio).toInt();
@@ -88,15 +94,37 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
         fit: BoxFit.contain,
         mode: ExtendedImageMode.gesture,
         gaplessPlayback: true, 
-        enableSlideOutPage: true,
+        enableSlideOutPage: false,
+        onDoubleTap: (ExtendedImageGestureState state) {
+          final double pointerDownPosition = state.pointerDownPosition?.dx ?? 0;
+          final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
+          double targetScale;
+
+          if (beginScale > 1.001) {
+            targetScale = 1.0;
+          } else {
+            targetScale = 3.0;
+          }
+
+          state.handleDoubleTap(
+            scale: targetScale,
+            doubleTapPosition: state.pointerDownPosition,
+          );
+
+          if (targetScale > 1.0 && !_allowOriginal) {
+             Future.delayed(const Duration(milliseconds: 150), () {
+               if (mounted) setState(() => _allowOriginal = true);
+             });
+          } 
+        },
         initGestureConfigHandler: (state) {
           return GestureConfig(
-            minScale: 0.9,
-            animationMinScale: 0.7,
-            maxScale: 4.0, 
-            animationMaxScale: 4.5,
+            minScale: 0.8, 
+            animationMinScale: 0.6,
+            maxScale: 5.0, 
+            animationMaxScale: 6.0,
             speed: 1.0,
-            inertialSpeed: 100.0,
+            inertialSpeed: 120.0,
             initialScale: 1.0,
             inPageView: true,
             initialAlignment: InitialAlignment.center,
@@ -105,9 +133,7 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
         loadStateChanged: (ExtendedImageState state) {
            switch (state.extendedImageLoadState) {
              case LoadState.loading:
-               // If upgrading to original, return null to let gaplessPlayback 
-               // show the previous Screen Nail image.
-               if (useOriginal) return null;
+               if (useOriginal) return null; // Gapless
                
                if (_placeholderBytes != null) {
                  return Image.memory(
@@ -116,7 +142,6 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
                    gaplessPlayback: true,
                  );
                }
-
                return const Center(child: CircularProgressIndicator(color: Colors.white));
                
              case LoadState.completed:
@@ -129,10 +154,16 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
                  duration: const Duration(milliseconds: 200),
                  curve: Curves.easeOut,
                  builder: (context, value, child) {
+                    // Once animation is done (value=1.0), immediately remove the placeholder
+                    // from the tree. This prevents the "duplicate image" ghost effect
+                    // when zooming out (pinching < 1.0).
+                    if (value >= 1.0) {
+                      return state.completedWidget;
+                    }
+                    
                     return Stack(
                       fit: StackFit.expand,
                       children: [
-                        // Keep showing placeholder behind the fading-in image
                         if (_placeholderBytes != null)
                            Image.memory(
                              _placeholderBytes!,
@@ -147,6 +178,9 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
                     );
                  },
                );
+               
+             case LoadState.failed:
+               // ...
                
              case LoadState.failed:
                return Center(
