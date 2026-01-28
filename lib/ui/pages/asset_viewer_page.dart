@@ -9,7 +9,7 @@ import 'package:intl/intl.dart';
 import '../../providers/photo_provider.dart';
 import '../widgets/video_viewer.dart';
 import '../widgets/photo_viewer.dart';
-import '../../services/thumbnail_cache.dart';
+
 
 class AssetViewerPage extends StatefulWidget {
   final AssetEntity asset;
@@ -45,6 +45,11 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
       
       _pageController = PageController(initialPage: _currentIndex);
       _isInit = true;
+      
+      // Precache neighbors immediately
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _precacheImages(_currentIndex);
+      });
     }
   }
 

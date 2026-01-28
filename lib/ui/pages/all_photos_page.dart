@@ -47,11 +47,14 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
     });
   }
 
+  final ValueNotifier<bool> _isFastScrolling = ValueNotifier(false);
+
   @override
   void dispose() {
     _scrollController.dispose();
     _scaleNotifier.dispose();
     _zoomAnimateController.dispose();
+    _isFastScrolling.dispose();
     super.dispose();
   }
 
@@ -323,6 +326,8 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
             child: DraggableScrollIcon(
               controller: _scrollController,
               backgroundColor: Colors.grey[900]!.withOpacity(0.8),
+              onDragStart: () => _isFastScrolling.value = true,
+              onDragEnd: () => _isFastScrolling.value = false,
               child: ValueListenableBuilder<double>(
                 valueListenable: _scaleNotifier,
                 builder: (context, scale, child) {
@@ -352,7 +357,10 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                         delegate: SliverChildBuilderDelegate(
                           (context, index) {
                             final AssetEntity entity = group.assets[index];
-                             return ThumbnailWidget(entity: entity);
+                             return ThumbnailWidget(
+                               entity: entity, 
+                               isFastScrolling: _isFastScrolling,
+                             );
                           },
                           childCount: group.assets.length,
                         ),

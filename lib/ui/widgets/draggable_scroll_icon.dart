@@ -5,6 +5,8 @@ class DraggableScrollIcon extends StatefulWidget {
   final Widget child;
   final Color? color;
   final Color? backgroundColor;
+  final VoidCallback? onDragStart;
+  final VoidCallback? onDragEnd;
 
   const DraggableScrollIcon({
     super.key,
@@ -12,6 +14,8 @@ class DraggableScrollIcon extends StatefulWidget {
     required this.child,
     this.color,
     this.backgroundColor,
+    this.onDragStart,
+    this.onDragEnd,
   });
 
   @override
@@ -59,6 +63,9 @@ class _DraggableScrollIconState extends State<DraggableScrollIcon> {
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details, double trackHeight) {
+    if (!_isDragging) {
+      widget.onDragStart?.call();
+    }
     setState(() {
       _isDragging = true;
       // Calculate new progress based on drag position
@@ -82,6 +89,7 @@ class _DraggableScrollIconState extends State<DraggableScrollIcon> {
   }
   
   void _onVerticalDragEnd(DragEndDetails details) {
+    widget.onDragEnd?.call();
     setState(() {
       _isDragging = false;
     });

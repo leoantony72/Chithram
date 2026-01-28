@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -21,13 +20,13 @@ class PhotoViewer extends StatefulWidget {
 }
 
 class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClientMixin {
-  Uint8List? _cachedThumbnail;
+  Uint8List? _placeholderBytes;
 
   @override
   void initState() {
     super.initState();
-    // Get the instant thumbnail from cache to show immediately
-    _cachedThumbnail = ThumbnailCache().getMemory(widget.asset.id);
+    // Grab the low-res thumb from the cache for immediate display
+    _placeholderBytes = ThumbnailCache().getMemory(widget.asset.id);
   }
 
   @override
@@ -110,14 +109,14 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
                // show the previous Screen Nail image.
                if (useOriginal) return null;
                
-               // Otherwise (initial load), show tiny thumbnail
-               if (_cachedThumbnail != null) {
+               if (_placeholderBytes != null) {
                  return Image.memory(
-                   _cachedThumbnail!,
+                   _placeholderBytes!,
                    fit: BoxFit.contain,
                    gaplessPlayback: true,
                  );
                }
+
                return const Center(child: CircularProgressIndicator(color: Colors.white));
                
              case LoadState.completed:
@@ -127,22 +126,23 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
                // For initial load, fade in
                return TweenAnimationBuilder<double>(
                  tween: Tween(begin: 0.0, end: 1.0),
-                 duration: const Duration(milliseconds: 250),
+                 duration: const Duration(milliseconds: 200),
                  curve: Curves.easeOut,
                  builder: (context, value, child) {
                     return Stack(
                       fit: StackFit.expand,
                       children: [
-                         if (_cachedThumbnail != null && value < 1.0)
+                        // Keep showing placeholder behind the fading-in image
+                        if (_placeholderBytes != null)
                            Image.memory(
-                             _cachedThumbnail!,
+                             _placeholderBytes!,
                              fit: BoxFit.contain,
                              gaplessPlayback: true,
                            ),
-                         Opacity(
-                           opacity: value,
-                           child: state.completedWidget,
-                         ),
+                        Opacity(
+                          opacity: value,
+                          child: state.completedWidget,
+                        ),
                       ],
                     );
                  },

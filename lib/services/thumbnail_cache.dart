@@ -139,7 +139,7 @@ class ThumbnailCache {
     try {
       debugPrint("Generating thumbnail for ${entity.id}...");
       final bytes = await entity.thumbnailDataWithSize(
-         const ThumbnailSize.square(400),
+         const ThumbnailSize.square(256),
          quality: 90,
       );
       
@@ -297,7 +297,7 @@ class ThumbnailCache {
       try {
         // Generate
         final bytes = await asset.thumbnailDataWithSize(
-           const ThumbnailSize.square(400),
+           const ThumbnailSize.square(256),
            quality: 90,
         );
         
