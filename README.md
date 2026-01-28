@@ -1,3 +1,3 @@
-# ninta
+# chithram
 
 A new Flutter project.
