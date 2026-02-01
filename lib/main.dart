@@ -9,6 +9,9 @@ import 'ui/pages/all_photos_page.dart';
 import 'ui/pages/people_page.dart';
 import 'ui/pages/albums_page.dart';
 import 'ui/pages/asset_viewer_page.dart';
+import 'ui/pages/person_details_page.dart';
+import 'ui/pages/album_details_page.dart';
+import 'ui/pages/map_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,6 +73,31 @@ final GoRouter _router = GoRouter(
         final asset = state.extra as AssetEntity; 
         return AssetViewerPage(asset: asset);
       },
+    ),
+
+
+    GoRoute(
+      path: '/person_details',
+      builder: (context, state) {
+        final Map<String, dynamic> args = state.extra as Map<String, dynamic>;
+        return PersonDetailsPage(
+          personName: args['name'] as String,
+          personId: args['id'] as int,
+        );
+      },
+    ),
+
+
+    GoRoute(
+      path: '/album_details',
+      builder: (context, state) {
+        final AssetPathEntity album = state.extra as AssetPathEntity;
+        return AlbumDetailsPage(album: album);
+      },
+    ),
+    GoRoute(
+      path: '/map',
+      builder: (context, state) => const MapPage(),
     ),
   ],
 );

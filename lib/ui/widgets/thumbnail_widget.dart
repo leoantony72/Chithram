@@ -9,11 +9,13 @@ import '../../services/thumbnail_cache.dart';
 class ThumbnailWidget extends StatefulWidget {
   final AssetEntity entity;
   final ValueListenable<bool>? isFastScrolling;
+  final String? heroTagPrefix;
   
   const ThumbnailWidget({
     super.key, 
     required this.entity,
     this.isFastScrolling,
+    this.heroTagPrefix,
   });
 
   @override
@@ -123,48 +125,42 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
     return RepaintBoundary(
       child: GestureDetector(
         onTap: () => context.push('/viewer', extra: widget.entity),
-        child: Hero(
-          tag: widget.entity.id,
-          placeholderBuilder: (context, size, widget) {
-             return Container(color: Colors.grey[900], child: widget);
-          },
-          child: Container(
-            color: Colors.grey[900],
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (_showImage && _bytes != null)
-                  Image.memory(
-                    _bytes!,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                  )
-                else
-                   // Placeholder
-                   Container(
-                     color: Colors.grey[900],
-                   ),
-                
-                if (widget.entity.type == AssetType.video)
-                  Positioned(
-                    top: 4,
-                    right: 4,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.5),
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white24, width: 1),
-                      ),
-                      child: const Icon(
-                        Icons.play_arrow_rounded,
-                        color: Colors.white,
-                        size: 14,
-                      ),
+        child: Container(
+          color: Colors.grey[900],
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_showImage && _bytes != null)
+                Image.memory(
+                  _bytes!,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                )
+              else
+                 // Placeholder
+                 Container(
+                   color: Colors.grey[900],
+                 ),
+              
+              if (widget.entity.type == AssetType.video)
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.5),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white24, width: 1),
+                    ),
+                    child: const Icon(
+                      Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: 14,
                     ),
                   ),
-              ],
-            ),
+                ),
+            ],
           ),
         ),
       ),

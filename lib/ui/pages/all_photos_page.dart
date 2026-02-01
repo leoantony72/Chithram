@@ -360,6 +360,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                              return ThumbnailWidget(
                                entity: entity, 
                                isFastScrolling: _isFastScrolling,
+                               heroTagPrefix: 'all_photos',
                              );
                           },
                           childCount: group.assets.length,

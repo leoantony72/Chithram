@@ -214,10 +214,8 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
     );
 
     if (widget.isActive) {
-      content = Hero(
-        tag: widget.asset.id,
-        child: content,
-      );
+      // Hero disabled to prevent glitches
+      // content = Hero(tag: widget.asset.id, child: content);
     }
 
     return content;
