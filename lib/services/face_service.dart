@@ -25,7 +25,15 @@ class FaceService {
 
     if (detModelPath != null) {
       final sessionOptions = OrtSessionOptions();
-      _detectionSession = OrtSession.fromFile(File(detModelPath), sessionOptions);
+      // Try setting execution mode to sequential if parallel causes issues
+      // sessionOptions.setSessionExecutionMode(OrtSessionExecutionMode.ORT_SEQUENTIAL); 
+      // Note: The specific option API depends on the package version. 
+      // For onnxruntime 1.4.1, default options might be sufficient or we need to be careful with graphing.
+      try {
+        _detectionSession = OrtSession.fromFile(File(detModelPath), sessionOptions);
+      } catch (e) {
+        print('Error loading detection model: $e');
+      }
     }
 
     if (recModelPath != null) {

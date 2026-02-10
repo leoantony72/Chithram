@@ -4,19 +4,19 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
 class ModelService {
-  // Update with your backend URL. Use 10.0.2.2 for Android Emulator to access localhost
-  static const String _baseUrl = 'http://10.0.2.2:8080';
-  // static const String _baseUrl = 'http://localhost:8080'; // For iOS Simulator
+  // Update with your backend URL. Use 10.0.2.2 for Android Emulator, or your PC IP for physical device.
+  static const String _baseUrl = 'http://10.39.53.139:8080'; // Updated to detected IP
 
   static const String faceDetectionModelName = 'face-detection';
   static const String faceRecognitionModelName = 'face-recognition';
 
-  Future<void> ensureModelsDownloaded() async {
-    await _downloadModel(faceDetectionModelName);
-    await _downloadModel(faceRecognitionModelName);
+  Future<bool> ensureModelsDownloaded() async {
+    final success1 = await _downloadModel(faceDetectionModelName);
+    final success2 = await _downloadModel(faceRecognitionModelName);
+    return success1 && success2;
   }
 
-  Future<void> _downloadModel(String modelName) async {
+  Future<bool> _downloadModel(String modelName) async {
     final docsDir = await getApplicationDocumentsDirectory();
     final modelPath = p.join(docsDir.path, '$modelName.onnx');
     final file = File(modelPath);
@@ -24,7 +24,7 @@ class ModelService {
     if (await file.exists()) {
       print('Model $modelName already exists at $modelPath');
       // Ideally check version/hash here
-      return;
+      return true;
     }
 
     print('Downloading model $modelName...');
@@ -34,12 +34,14 @@ class ModelService {
       if (response.statusCode == 200) {
         await file.writeAsBytes(response.bodyBytes);
         print('Model $modelName downloaded successfully to $modelPath');
+        return true;
       } else {
         print('Failed to download model $modelName: ${response.statusCode}');
       }
     } catch (e) {
       print('Error downloading model $modelName: $e');
     }
+    return false;
   }
 
   Future<String?> getModelPath(String modelName) async {

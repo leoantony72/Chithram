@@ -59,6 +59,24 @@ class _PeoplePageState extends State<PeoplePage> {
       return;
     }
 
+    setState(() => _statusMessage = 'Checking models...');
+    final modelsReady = await _modelService.ensureModelsDownloaded();
+    if (!modelsReady) {
+      if (mounted) {
+        setState(() {
+          _isScanning = false;
+          _statusMessage = 'Model download failed. Check Server.';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to download models. Is backend running?')),
+        );
+      }
+      return;
+    }
+
+    // Safely Initialize FaceService only after models are ready
+    await _faceService.initialize();
+
     setState(() => _statusMessage = 'Fetching photos...');
     // Fetch recent 50 photos for demo
     final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(type: RequestType.image);
