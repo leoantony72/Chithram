@@ -4,7 +4,6 @@ import 'package:intl/intl.dart';
 import 'package:collection/collection.dart';
 import '../../services/database_service.dart';
 import '../widgets/section_header_delegate.dart';
-import 'photo_viewer_page.dart'; // Ensure this exists or use placeholder
 
 class PersonDetailsPage extends StatefulWidget {
   final String personName;

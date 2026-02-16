@@ -373,14 +373,15 @@ class _PeoplePageState extends State<PeoplePage> {
               itemBuilder: (context, index) {
                 final cluster = _clusters[index];
                 return GestureDetector(
-                  onTap: () {
-                    context.push(
+                  onTap: () async {
+                    await context.push(
                       '/person_details',
                       extra: {
                         'name': cluster['name'] ?? 'Person ${cluster['id']}',
                         'id': cluster['id'],
                       },
                     );
+                    _loadClusters();
                   },
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
