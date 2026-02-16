@@ -8,48 +8,181 @@ class ClusterService {
   // Threshold for Euclidean distance. 
   // MobileFaceNet typically uses 1.0 - 1.2 for verification.
   // Adjust based on testing.
-  static const double _similarityThreshold = 1.0; 
+  // DBSCAN Epsilon (Max distance between two faces to be considered neighbors)
+  // Since we normalize vectors (L2), range is 0.0 to 2.0.
+  // 0.0 = Identical.
+  // 1.0 = Orthogonal.
+  // 0.7 - 0.8 is usually a high confidence match.
+  // 0.9 - 1.0 is a loose match.
+  // Since DBSCAN chains matches (transitive), we should use a stricter threshold than incremental.
+  static const double _eps = 0.95; 
+  static const int _minPoints = 1; // Even a single face is a person
 
-  Future<void> processFace(int faceId, List<double> newEmbedding) async {
-    final clusters = await _dbService.getAllClusters();
+  Future<void> runClustering() async {
+    print('Starting Global Clustering...');
+    final db = await _dbService.database;
     
-    int? bestClusterId;
-    double minDistance = double.infinity;
+    // 1. Clear existing clusters and assignments
+    // (In a real app, we might want to preserve named clusters, but here we rebuild)
+    print('Clearing DB clusters...');
+    await db.delete('clusters');
+    await db.update('faces', {'cluster_id': null});
 
-    for (var cluster in clusters) {
-      final representativeFaceId = cluster['representative_face_id'] as int;
-      // Fetch representative face embedding
-      // Ideally cache this or fetch in batch
-      final faces = await _dbService.getAllFaces(); 
-      final repFace = faces.firstWhere((f) => f['id'] == representativeFaceId);
-      final repEmbedding = _loadEmbedding(repFace['embedding']);
+    // 2. Fetch all valid embeddings
+    print('Fetching faces...');
+    final faces = await _dbService.getAllFaces();
+    print('Fetched ${faces.length} faces. Parsing blobs...');
+    final List<_FaceNode> nodes = [];
+    
+    for (var f in faces) {
+       final blob = f['embedding'] as Uint8List?;
+       if (blob != null) {
+          final vec = _loadEmbedding(blob);
+          if (vec.isNotEmpty) {
+             nodes.add(_FaceNode(f['id'], vec));
+          }
+       }
+    }
 
-      final distance = _calculateEuclideanDistance(newEmbedding, repEmbedding);
-      
-      if (distance < _similarityThreshold && distance < minDistance) {
-        minDistance = distance;
-        bestClusterId = cluster['id'];
+    if (nodes.isEmpty) {
+        print('No valid face embeddings found to cluster.');
+        return;
+    }
+    print('Clustering ${nodes.length} valid faces...');
+
+    // 3. DBSCAN Algorithm
+    int clusterCount = 0;
+    
+    try {
+      for (var i = 0; i < nodes.length; i++) {
+        // Yield to prevent UI freeze
+        if (i % 5 == 0) await Future.delayed(Duration.zero);
+
+        if (nodes[i].visited) continue;
+        
+        nodes[i].visited = true;
+        final neighbors = _regionQuery(nodes, nodes[i]); // Get neighbors
+        
+        // Mark these initial neighbors as "known" to prevent duplicates in the list
+        final Set<int> knownNeighborIds = neighbors.map((n) => n.id).toSet();
+        knownNeighborIds.add(nodes[i].id);
+
+        if (neighbors.length < _minPoints) {
+           // Treated as noise or single-person cluster
+        }
+        
+        // Expand Cluster
+        clusterCount++;
+        final clusterName = 'Person $clusterCount';
+        
+        final clusterId = await _dbService.createCluster(
+          name: clusterName,
+          representativeFaceId: nodes[i].id, 
+        );
+
+        final List<_FaceNode> clusterMembers = [nodes[i]];
+        
+        // Expand using list iteration
+        for (var k = 0; k < neighbors.length; k++) {
+           final neighbor = neighbors[k];
+           
+           if (!neighbor.visited) {
+              neighbor.visited = true;
+              final neighborNeighbors = _regionQuery(nodes, neighbor);
+              
+              if (neighborNeighbors.length >= _minPoints) {
+                 for (var nn in neighborNeighbors) {
+                    if (!knownNeighborIds.contains(nn.id)) {
+                       neighbors.add(nn);
+                       knownNeighborIds.add(nn.id);
+                    }
+                 }
+              }
+           }
+           
+           if (!neighbor.clustered) {
+              clusterMembers.add(neighbor);
+              neighbor.clustered = true;
+           }
+        }
+        nodes[i].clustered = true; 
+
+        // 4. Save Cluster Members
+        for (var member in clusterMembers) {
+           await _dbService.updateFaceCluster(member.id, clusterId);
+        }
+        
+        // 5. Update Centroid
+        await _calculateAndSaveCentroid(clusterId, clusterMembers);
       }
+    } catch (e, stack) {
+      print('Clustering Error: $e');
+      print(stack);
+    }
+    
+    print('Clustering Complete. Found $clusterCount clusters.');
+  }
+
+  List<_FaceNode> _regionQuery(List<_FaceNode> allNodes, _FaceNode center) {
+    final List<_FaceNode> neighbors = [];
+    for (var node in allNodes) {
+       if (node.id == center.id) continue;
+       final dist = _calculateEuclideanDistance(center.embedding, node.embedding);
+       if (dist <= _eps) {
+          neighbors.add(node);
+       }
+    }
+    return neighbors;
+  }
+
+  Future<void> _calculateAndSaveCentroid(int clusterId, List<_FaceNode> members) async {
+    if (members.isEmpty) return;
+    
+    // Calculate Mean Vector
+    final int dim = members[0].embedding.length;
+    final meanVector = List<double>.filled(dim, 0.0);
+    
+    for (var m in members) {
+       for (var i = 0; i < dim; i++) meanVector[i] += m.embedding[i];
+    }
+    
+    // Normalize
+    double magnitude = 0;
+    for (var i = 0; i < dim; i++) {
+       meanVector[i] /= members.length;
+       magnitude += meanVector[i] * meanVector[i];
+    }
+    magnitude = sqrt(magnitude);
+    if (magnitude > 0) {
+       for (var i = 0; i < dim; i++) meanVector[i] /= magnitude;
     }
 
-    if (bestClusterId != null) {
-      // Add to existing cluster
-      await _dbService.updateFaceCluster(faceId, bestClusterId);
-      print('Face $faceId added to Cluster $bestClusterId (Dist: $minDistance)');
-    } else {
-      // Create new cluster
-      final newClusterId = await _dbService.createCluster(
-        name: 'Person ${clusters.length + 1}',
-        representativeFaceId: faceId,
-      );
-      await _dbService.updateFaceCluster(faceId, newClusterId);
-      print('Created new Cluster $newClusterId for Face $faceId');
-    }
+    final bytes = Float32List.fromList(meanVector).buffer.asUint8List();
+    await _dbService.updateClusterEmbedding(clusterId, bytes);
   }
 
   List<double> _loadEmbedding(Uint8List blob) {
-    // Assuming purely float32 bytes for now, or just handle list conversion
-    return Float32List.view(blob.buffer).toList();
+    if (blob.lengthInBytes % 4 != 0) {
+      print('ClusterService: Skipping invalid blob of size ${blob.lengthInBytes}');
+      return [];
+    }
+    
+    var buffer = blob.buffer;
+    var offset = blob.offsetInBytes;
+    
+    // Fix alignment issues (offset 237 etc)
+    if (offset % 4 != 0) {
+        final copy = Uint8List.fromList(blob);
+        buffer = copy.buffer;
+        offset = 0;
+    }
+    
+    try {
+      return Float32List.view(buffer, offset, blob.lengthInBytes ~/ 4).toList();
+    } catch (e) {
+      print('ClusterService: Error parsing blob: $e');
+      return [];
+    }
   }
 
   double _calculateEuclideanDistance(List<double> v1, List<double> v2) {
@@ -60,4 +193,13 @@ class ClusterService {
     }
     return sqrt(sum);
   }
+}
+
+class _FaceNode {
+  final int id;
+  final List<double> embedding;
+  bool visited = false;
+  bool clustered = false;
+  
+  _FaceNode(this.id, this.embedding);
 }

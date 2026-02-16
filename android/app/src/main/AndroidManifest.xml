@@ -10,6 +10,7 @@
         android:label="Chithram"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
         android:requestLegacyExternalStorage="true">
         <activity
             android:name=".MainActivity"

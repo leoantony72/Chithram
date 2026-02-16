@@ -4,8 +4,15 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
 class ModelService {
-  // Update with your backend URL. Use 10.0.2.2 for Android Emulator, or your PC IP for physical device.
-  static const String _baseUrl = 'http://10.39.53.139:8080'; // Updated to detected IP
+  // Use 10.0.2.2 for Android Emulator to access host's localhost.
+  // For physical devices, use your computer's LAN IP (e.g., 192.168.x.x).
+  static String get _baseUrl {
+    if (Platform.isAndroid) {
+      // User's specific LAN IP for physical device or emulator access
+      return 'http://192.168.18.11:8080';
+    }
+    return 'http://localhost:8080';
+  }
 
   static const String faceDetectionModelName = 'face-detection';
   static const String faceRecognitionModelName = 'face-recognition';
@@ -29,7 +36,8 @@ class ModelService {
 
     print('Downloading model $modelName...');
     try {
-      final response = await http.get(Uri.parse('$_baseUrl/models/$modelName/download'));
+      final response = await http.get(Uri.parse('$_baseUrl/models/$modelName/download'))
+          .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
         await file.writeAsBytes(response.bodyBytes);
