@@ -9,7 +9,7 @@ class ModelService {
   static String get _baseUrl {
     if (Platform.isAndroid) {
       // User's specific LAN IP for physical device or emulator access
-      return 'http://192.168.18.11:8080';
+      return 'http://10.221.188.139:8080';
     }
     return 'http://localhost:8080';
   }

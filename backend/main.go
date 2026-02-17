@@ -6,6 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"chithram/controllers"
+	"chithram/database"
+	"chithram/models"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,7 +21,16 @@ type ModelInfo struct {
 }
 
 func main() {
+	// Connect to database
+	database.Connect()
+	// Auto migrate
+	database.DB.AutoMigrate(&models.User{})
+
 	r := gin.Default()
+
+	// Auth Endpoints
+	r.POST("/signup", controllers.Signup)
+	r.POST("/login", controllers.Login)
 
 	// Ensure models directory exists
 	modelsDir := "./models"
@@ -75,5 +88,7 @@ func main() {
 
 	port := "8080"
 	fmt.Printf("Server starting on port %s\n", port)
-	r.Run(":" + port)
+	if err := r.Run(":" + port); err != nil {
+		fmt.Printf("Error starting server: %v\n", err)
+	}
 }

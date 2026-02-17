@@ -12,6 +12,7 @@ import 'ui/pages/asset_viewer_page.dart';
 import 'ui/pages/person_details_page.dart';
 import 'ui/pages/album_details_page.dart';
 import 'ui/pages/map_page.dart';
+import 'screens/auth_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +35,7 @@ final _sectionNavigatorKey = GlobalKey<NavigatorState>();
 
 final GoRouter _router = GoRouter(
   navigatorKey: _rootNavigatorKey,
-  initialLocation: '/',
+  initialLocation: '/auth',
   routes: <RouteBase>[
     StatefulShellRoute.indexedStack(
       builder: (BuildContext context, GoRouterState state, StatefulNavigationShell navigationShell) {
@@ -98,6 +99,10 @@ final GoRouter _router = GoRouter(
     GoRoute(
       path: '/map',
       builder: (context, state) => const MapPage(),
+    ),
+    GoRoute(
+      path: '/auth',
+      builder: (context, state) => const AuthScreen(),
     ),
   ],
 );
