@@ -12,8 +12,10 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _usernameController = TextEditingController();
   bool _isLogin = true; // Toggle between Login and Signup
   bool _isLoading = false;
+  bool _isCheckingPersistence = true;
   String? _errorMessage;
 
   @override
@@ -24,6 +26,23 @@ class _AuthScreenState extends State<AuthScreen> {
 
   Future<void> _initializeAuthService() async {
     await AuthService().init();
+    await _checkPersistentLogin();
+  }
+
+  Future<void> _checkPersistentLogin() async {
+    final keys = await AuthService().loadSession();
+    if (keys != null) {
+      print('Persistent login successful.');
+      if (mounted) {
+        context.go('/');
+      }
+    } else {
+      if (mounted) {
+        setState(() {
+          _isCheckingPersistence = false;
+        });
+      }
+    }
   }
 
   Future<void> _submit() async {
@@ -34,10 +53,11 @@ class _AuthScreenState extends State<AuthScreen> {
 
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
+    final username = _usernameController.text.trim();
 
-    if (email.isEmpty || password.isEmpty) {
+    if (email.isEmpty || password.isEmpty || (!_isLogin && username.isEmpty)) {
       setState(() {
-        _errorMessage = 'Please enter email and password.';
+        _errorMessage = 'Please enter all fields.';
         _isLoading = false;
       });
       return;
@@ -49,7 +69,7 @@ class _AuthScreenState extends State<AuthScreen> {
       success = keys != null;
       if (success) {
         // Handle successful login (e.g., store keys, navigate)
-        print('Login successful! Keys received: ${keys.keys}');
+        print('Login successful! Keys received: ${keys!.keys}');
          if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Login Successful! Redirecting...')),
@@ -63,7 +83,7 @@ class _AuthScreenState extends State<AuthScreen> {
         });
       }
     } else {
-      success = await AuthService().signup(email, password);
+      success = await AuthService().signup(username, email, password);
       if (success) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -75,7 +95,7 @@ class _AuthScreenState extends State<AuthScreen> {
         }
       } else {
         setState(() {
-          _errorMessage = 'Signup failed. Email might be taken.';
+          _errorMessage = 'Signup failed. Username or Email might be taken.';
         });
       }
     }
@@ -89,6 +109,12 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isCheckingPersistence) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(title: Text(_isLogin ? 'Login' : 'Signup')),
       body: Center(
@@ -98,10 +124,29 @@ class _AuthScreenState extends State<AuthScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                'Ente-like E2EE Auth',
-                style: Theme.of(context).textTheme.headlineMedium,
+                'Chithram',
+                style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).primaryColor,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Secure E2EE Photos',
+                style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 32),
+              if (!_isLogin) ...[
+                TextField(
+                  controller: _usernameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Username',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
               TextField(
                 controller: _emailController,
                 decoration: const InputDecoration(

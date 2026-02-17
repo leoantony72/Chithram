@@ -50,6 +50,14 @@ class DatabaseService {
             image_path TEXT PRIMARY KEY
           )
         ''');
+
+        await db.execute('''
+          CREATE TABLE backup_settings (key TEXT PRIMARY KEY, value TEXT)
+        ''');
+
+        await db.execute('''
+          CREATE TABLE backup_log (file_path TEXT PRIMARY KEY, status TEXT, timestamp INTEGER)
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
          if (oldVersion < 4) {
@@ -65,9 +73,44 @@ class DatabaseService {
                await db.execute('CREATE TABLE processed_images (image_path TEXT PRIMARY KEY)');
             } catch (_) {}
          }
+         if (oldVersion < 6) {
+            try {
+               await db.execute('CREATE TABLE backup_settings (key TEXT PRIMARY KEY, value TEXT)');
+               await db.execute('CREATE TABLE backup_log (file_path TEXT PRIMARY KEY, status TEXT, timestamp INTEGER)');
+            } catch (_) {}
+         }
       },
-      version: 5, 
+      version: 6, 
     );
+  }
+
+  // --- Backup Operations ---
+
+  Future<void> setBackupSetting(String key, String value) async {
+    final db = await database;
+    await db.insert('backup_settings', {'key': key, 'value': value}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<String?> getBackupSetting(String key) async {
+    final db = await database;
+    final res = await db.query('backup_settings', where: 'key = ?', whereArgs: [key]);
+    if (res.isNotEmpty) return res.first['value'] as String;
+    return null;
+  }
+
+  Future<void> logBackupStatus(String path, String status) async {
+    final db = await database;
+    await db.insert(
+      'backup_log', 
+      {'file_path': path, 'status': status, 'timestamp': DateTime.now().millisecondsSinceEpoch}, 
+      conflictAlgorithm: ConflictAlgorithm.replace
+    );
+  }
+
+  Future<bool> isBackedUp(String path) async {
+    final db = await database;
+    final res = await db.query('backup_log', where: 'file_path = ? AND status = ?', whereArgs: [path, 'UPLOADED']);
+    return res.isNotEmpty;
   }
 
   // --- Face Operations ---

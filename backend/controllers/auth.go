@@ -11,6 +11,7 @@ import (
 )
 
 type SignupInput struct {
+	Username            string `json:"username" binding:"required"`
 	Email               string `json:"email" binding:"required"`
 	Password            string `json:"password" binding:"required"`
 	KEKSalt             string `json:"kek_salt" binding:"required"`
@@ -33,6 +34,18 @@ func Signup(c *gin.Context) {
 		return
 	}
 
+	// Check if username unique
+	var existingUser models.User
+	if err := database.DB.Where("username = ?", input.Username).First(&existingUser).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Username already taken"})
+		return
+	}
+	// Check if email unique (optional, GORM handles it via unique index constraint too but explicit is nice)
+	if err := database.DB.Where("email = ?", input.Email).First(&existingUser).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Email already registered"})
+		return
+	}
+
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
@@ -40,6 +53,7 @@ func Signup(c *gin.Context) {
 	}
 
 	user := models.User{
+		Username:            input.Username,
 		Email:               input.Email,
 		Password:            string(hashedPassword),
 		KEKSalt:             input.KEKSalt,
@@ -78,6 +92,7 @@ func Login(c *gin.Context) {
 
 	// In a real app, generate a JWT token here. For this demo, we return the encryption blobs immediately.
 	c.JSON(http.StatusOK, gin.H{
+		"username":              user.Username,
 		"email":                 user.Email,
 		"kek_salt":              user.KEKSalt,
 		"encrypted_master_key":  user.EncryptedMasterKey,

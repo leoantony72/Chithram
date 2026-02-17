@@ -73,4 +73,9 @@ class CryptoService {
   KeyPair generateKeyPair() {
     return sodium.crypto.box.keyPair();
   }
+
+  // Restore SecureKey from bytes
+  SecureKey restoreKey(Uint8List bytes) {
+    return sodium.secureCopy(bytes);
+  }
 }

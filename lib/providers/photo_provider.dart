@@ -8,10 +8,13 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
 import '../models/photo_group.dart';
+import '../services/backup_service.dart';
+import '../services/auth_service.dart';
 
 class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> _paths = [];
   List<AssetEntity> _allAssets = [];
+  List<String> _remotePaths = []; // Added remotePaths
   
   // Grouped data
   List<PhotoGroup> _groupedByDay = [];
@@ -36,6 +39,17 @@ class PhotoProvider with ChangeNotifier {
   List<PhotoGroup> get groupedByMonth => _groupedByMonth;
   List<PhotoGroup> get groupedByYear => _groupedByYear;
   
+  List<String> get remotePaths => _remotePaths;
+
+  Future<void> _fetchRemotePhotos() async {
+    final session = await AuthService().loadSession();
+    if (session != null) {
+      final username = session['username'] as String;
+      _remotePaths = await BackupService().listServerFiles(username);
+      notifyListeners();
+    }
+  }
+
   Map<String, latlong.LatLng> get locationCache => _locationCache;
   bool get isLocationScanning => _isLocationScanning;
   double get locationScanProgress => _locationScanProgress;
@@ -96,10 +110,13 @@ class PhotoProvider with ChangeNotifier {
 
         // Background Load rest
         if (totalCount > initialFetch) {
-           _fetchRemainingAssets(initialFetch, totalCount);
-        } else {
-           startLocationScan(); 
+           await _fetchRemainingAssets(initialFetch, totalCount); // Await this to ensure all local assets are loaded
         }
+        
+        // After all local assets are loaded and grouped, start location scan and fetch remote photos
+        await startLocationScan(); 
+        await _fetchRemotePhotos(); 
+
       } else {
         _isLoading = false;
         notifyListeners();

@@ -9,6 +9,7 @@ import (
 	"chithram/controllers"
 	"chithram/database"
 	"chithram/models"
+	"chithram/services"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,11 +27,21 @@ func main() {
 	// Auto migrate
 	database.DB.AutoMigrate(&models.User{})
 
+	// Init MinIO
+	services.InitMinio()
+
 	r := gin.Default()
 
 	// Auth Endpoints
 	r.POST("/signup", controllers.Signup)
 	r.POST("/login", controllers.Login)
+
+	// Upload Endpoint
+	r.POST("/upload", controllers.BatchUploadImages)
+
+	// Image Endpoints
+	r.GET("/images", controllers.ListImages)
+	r.GET("/image/download", controllers.DownloadImage)
 
 	// Ensure models directory exists
 	modelsDir := "./models"

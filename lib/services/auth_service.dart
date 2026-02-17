@@ -3,11 +3,14 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:sodium_libs/sodium_libs_sumo.dart'; // For Sumo types
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter/foundation.dart';
 import 'crypto_service.dart';
 
 class AuthService {
   static final AuthService _instance = AuthService._internal();
   final CryptoService _cryptoService = CryptoService();
+  final _storage = const FlutterSecureStorage();
 
   factory AuthService() {
     return _instance;
@@ -17,8 +20,9 @@ class AuthService {
 
   // Helper for Base URL
   String get _baseUrl {
+    if (kIsWeb) return 'http://localhost:8080';
     if (Platform.isAndroid) {
-      return 'http://10.221.188.139:8080';
+      return 'http://192.168.18.11:8080';
     }
     return 'http://localhost:8080';
   }
@@ -27,7 +31,41 @@ class AuthService {
     await _cryptoService.init();
   }
 
-  Future<bool> signup(String email, String password) async {
+  // --- Session Persistence ---
+  
+  // --- Session Persistence ---
+  
+  Future<void> saveSession(String username, Uint8List masterKey, Uint8List privateKey, Uint8List publicKey) async {
+    await _storage.write(key: 'username', value: username);
+    await _storage.write(key: 'master_key', value: base64Encode(masterKey));
+    await _storage.write(key: 'private_key', value: base64Encode(privateKey));
+    await _storage.write(key: 'public_key', value: base64Encode(publicKey));
+  }
+
+  Future<Map<String, dynamic>?> loadSession() async {
+    final user = await _storage.read(key: 'username');
+    final mk = await _storage.read(key: 'master_key');
+    final pk = await _storage.read(key: 'private_key');
+    final pub = await _storage.read(key: 'public_key');
+
+    if (user != null && mk != null && pk != null && pub != null) {
+      return {
+        'username': user,
+        'masterKey': base64Decode(mk),
+        'privateKey': base64Decode(pk),
+        'publicKey': base64Decode(pub),
+      };
+    }
+    return null;
+  }
+
+  Future<void> logout() async {
+    await _storage.deleteAll();
+  }
+
+  // --- Auth Flow ---
+
+  Future<bool> signup(String username, String email, String password) async {
     try {
       // 1. Generate Keys & Salts
       final masterKey = _cryptoService.generateMasterKey(); // Returns SecureKey
@@ -47,6 +85,7 @@ class AuthService {
 
       // 5. Prepare Payload
       final payload = {
+        'username': username,
         'email': email,
         'password': password,
         'kek_salt': base64Encode(kekSalt),
@@ -93,6 +132,7 @@ class AuthService {
       final data = jsonDecode(response.body);
 
       // 2. Extract Data
+      final username = data['username'] as String;
       final kekSalt = base64Decode(data['kek_salt']);
       final encryptedMk = base64Decode(data['encrypted_master_key']);
       final nonceMk = base64Decode(data['master_key_nonce']);
@@ -113,11 +153,22 @@ class AuthService {
 
       print('Login successful. Keys decrypted.');
       
-      return {
+      final keys = {
+        'username': username,
         'masterKey': masterKeyBytes, // Returning bytes for display/usage
         'privateKey': privateKeyBytes,
         'publicKey': base64Decode(data['public_key']),
       };
+      
+      // Save for persistence
+      await saveSession(
+        username,
+        keys['masterKey'] as Uint8List, 
+        keys['privateKey'] as Uint8List, 
+        keys['publicKey'] as Uint8List
+      );
+      
+      return keys;
 
     } catch (e) {
       print('Login error/decryption failed: $e');

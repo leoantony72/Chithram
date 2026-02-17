@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:collection/collection.dart';
@@ -33,6 +34,10 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
   }
 
   Future<void> _loadPersonAssets() async {
+    if (kIsWeb) {
+      if (mounted) setState(() => _isLoading = false);
+      return;
+    }
     final paths = await _dbService.getPhotoPathsForCluster(widget.personId);
     
     final List<File> files = [];
@@ -130,6 +135,7 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
                         delegate: SliverChildBuilderDelegate(
                           (context, index) {
                             final file = group.files[index];
+                            if (kIsWeb) return const SizedBox.shrink(); 
                             return GestureDetector(
                               onTap: () {
                                 // Navigate to viewer (simplified)
@@ -164,7 +170,7 @@ class _SimplePhotoViewer extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0),
       backgroundColor: Colors.black,
-      body: Center(child: Image.file(file)),
+      body: Center(child: kIsWeb ? const Text('Not supported on Web') : Image.file(file)),
     );
   }
 }

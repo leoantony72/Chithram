@@ -281,7 +281,19 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('All Photos')),
+      appBar: AppBar(
+        title: const Text('All Photos'),
+        actions: [
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'settings') context.push('/settings');
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'settings', child: Text('Settings')),
+            ],
+          ),
+        ],
+      ),
       body: Consumer<PhotoProvider>(
         builder: (context, provider, child) {
           if (provider.isLoading && provider.allAssets.isEmpty) {

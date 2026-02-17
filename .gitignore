@@ -1,3 +1,5 @@
+objectData/
+.minio.sys/
 # Miscellaneous
 *.class
 *.log

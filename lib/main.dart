@@ -12,6 +12,7 @@ import 'ui/pages/asset_viewer_page.dart';
 import 'ui/pages/person_details_page.dart';
 import 'ui/pages/album_details_page.dart';
 import 'ui/pages/map_page.dart';
+import 'ui/pages/settings_page.dart';
 import 'screens/auth_screen.dart';
 
 void main() {
@@ -99,6 +100,10 @@ final GoRouter _router = GoRouter(
     GoRoute(
       path: '/map',
       builder: (context, state) => const MapPage(),
+    ),
+    GoRoute(
+      path: '/settings',
+      builder: (context, state) => const SettingsPage(),
     ),
     GoRoute(
       path: '/auth',
