@@ -14,6 +14,7 @@ import 'ui/pages/album_details_page.dart';
 import 'ui/pages/map_page.dart';
 import 'ui/pages/settings_page.dart';
 import 'screens/auth_screen.dart';
+import 'models/gallery_item.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -72,8 +73,14 @@ final GoRouter _router = GoRouter(
     GoRoute(
       path: '/viewer',
       builder: (context, state) {
-        final asset = state.extra as AssetEntity; 
-        return AssetViewerPage(asset: asset);
+        final extra = state.extra;
+        if (extra is GalleryItem) {
+          return AssetViewerPage(item: extra);
+        } else if (extra is AssetEntity) {
+          // Fallback for existing calls
+          return AssetViewerPage(item: GalleryItem.local(extra));
+        }
+        throw Exception("Invalid argument for /viewer: $extra");
       },
     ),
 

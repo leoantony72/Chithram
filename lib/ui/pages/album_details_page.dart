@@ -4,6 +4,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:intl/intl.dart';
 import 'package:collection/collection.dart';
 import '../../models/photo_group.dart';
+import '../../models/gallery_item.dart';
 import '../widgets/section_header_delegate.dart';
 import '../widgets/thumbnail_widget.dart';
 import '../widgets/draggable_scroll_icon.dart';
@@ -48,8 +49,8 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
     final int firstBatch = 500;
     
     // Fetch initial batch
-    final initialAssets = await widget.album.getAssetListRange(start: 0, end: firstBatch);
-    _updateGroups(initialAssets);
+    List<AssetEntity> initialAssets = await widget.album.getAssetListRange(start: 0, end: firstBatch);
+    _updateGroups(_convertToGalleryItems(initialAssets));
     
     if (mounted) {
       setState(() {
@@ -67,20 +68,24 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
          // Combine and re-group. 
          // Note: merging lists and regrouping 5k-10k items is fast (sync).
          final allAssets = [...initialAssets, ...remainingAssets];
-         _updateGroups(allAssets);
+         _updateGroups(_convertToGalleryItems(allAssets));
          setState(() {});
       }
     }
   }
 
-  void _updateGroups(List<AssetEntity> assets) {
+  List<GalleryItem> _convertToGalleryItems(List<AssetEntity> assets) {
+    return assets.map((e) => GalleryItem.local(e)).toList();
+  }
+
+  void _updateGroups(List<GalleryItem> items) {
     // Group by Day
-    final Map<DateTime, List<AssetEntity>> dayGroups = groupBy(assets, (AssetEntity e) {
-      return DateTime(e.createDateTime.year, e.createDateTime.month, e.createDateTime.day);
+    final Map<DateTime, List<GalleryItem>> dayGroups = groupBy(items, (GalleryItem e) {
+      return DateTime(e.date.year, e.date.month, e.date.day);
     });
 
     final List<PhotoGroup> grouped = dayGroups.entries.map((entry) {
-      return PhotoGroup(date: entry.key, assets: entry.value);
+      return PhotoGroup(date: entry.key, items: entry.value);
     }).toList();
     
     // Sort descending
@@ -144,14 +149,18 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
                           ),
                           delegate: SliverChildBuilderDelegate(
                             (context, index) {
-                              final AssetEntity entity = group.assets[index];
-                              return ThumbnailWidget(
-                                entity: entity,
-                                isFastScrolling: _isFastScrolling, 
-                                heroTagPrefix: 'album_details_${widget.album.id}',
-                              );
+                              final GalleryItem item = group.items[index];
+                              // Local only for now in albums
+                              if (item.type == GalleryItemType.local) {
+                                return ThumbnailWidget(
+                                  entity: item.local!,
+                                  isFastScrolling: _isFastScrolling, 
+                                  heroTagPrefix: 'album_details_${widget.album.id}',
+                                );
+                              }
+                              return const SizedBox.shrink();
                             },
-                            childCount: group.assets.length,
+                            childCount: group.items.length,
                           ),
                         ),
                       ]

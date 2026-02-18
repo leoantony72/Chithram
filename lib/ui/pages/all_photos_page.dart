@@ -6,8 +6,10 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:intl/intl.dart';
 import '../../providers/photo_provider.dart';
 import '../../models/photo_group.dart';
+import '../../models/gallery_item.dart';
 import '../widgets/section_header_delegate.dart';
 import '../widgets/thumbnail_widget.dart';
+import '../widgets/remote_thumbnail_widget.dart';
 import '../widgets/draggable_scroll_icon.dart';
 
 class AllPhotosPage extends StatefulWidget {
@@ -35,10 +37,10 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   void initState() {
     super.initState();
     _zoomAnimateController = AnimationController(
-      vsync: this, 
-      duration: const Duration(milliseconds: 200)
+        vsync: this,
+        duration: const Duration(milliseconds: 200)
     );
-    
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final provider = Provider.of<PhotoProvider>(context, listen: false);
       if (!provider.hasPermission) {
@@ -60,12 +62,12 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
 
   void _onScaleStart(ScaleStartDetails details) {
     if (_zoomAnimateController.isAnimating) return;
-    
+
     _lastFocalPoint = details.focalPoint;
     final size = MediaQuery.of(context).size;
     final double x = ((details.focalPoint.dx / size.width) - 0.5) * 2;
     final double y = ((details.focalPoint.dy / size.height) - 0.5) * 2;
-    
+
     setState(() {
       _scaleAlignment = Alignment(x, y);
     });
@@ -79,15 +81,15 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
 
   void _onScaleEnd(ScaleEndDetails details) {
     if (_zoomAnimateController.isAnimating) return;
-    
+
     final double scale = _scaleNotifier.value;
-    
+
     // Ratios based on column counts: Day(3), Month(5), Year(7)
-    const double ratioMonthToDay = 5 / 3; 
-    const double ratioMonthToYear = 5 / 7; 
-    const double ratioYearToMonth = 7 / 5; 
-    const double ratioDayToMonth = 3 / 5; 
-    
+    const double ratioMonthToDay = 5 / 3;
+    const double ratioMonthToYear = 5 / 7;
+    const double ratioYearToMonth = 7 / 5;
+    const double ratioDayToMonth = 3 / 5;
+
     double targetScale = 1.0;
     GroupMode? nextMode;
     GroupMode currentMode = _groupMode;
@@ -115,45 +117,45 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
       final provider = Provider.of<PhotoProvider>(context, listen: false);
       final double currentOffset = _scrollController.hasClients ? _scrollController.offset : 0.0;
       final double focalAbsoluteY = currentOffset + _lastFocalPoint.dy;
-      
+
       final List<PhotoGroup> currentGroups = _getGroupsForMode(currentMode, provider);
       final int currentCols = _getColsForMode(currentMode);
-      
-      final AssetEntity? anchorAsset = _findAssetAtOffset(focalAbsoluteY, currentGroups, currentCols);
+
+      final GalleryItem? anchorAsset = _findAssetAtOffset(focalAbsoluteY, currentGroups, currentCols);
 
       _runScaleAnimation(
-        start: scale, 
-        end: targetScale, 
-        onComplete: () {
-          // 2. Calculate new exact offset
-          double newOffset = 0.0;
-          
-          if (anchorAsset != null) {
-             final List<PhotoGroup> nextGroups = _getGroupsForMode(nextMode!, provider);
-             final int nextCols = _getColsForMode(nextMode);
-             
-             final double newAssetY = _calculateAssetY(anchorAsset, nextGroups, nextCols);
-             
-             // Pin anchor to focal point
-             newOffset = newAssetY - _lastFocalPoint.dy;
-             if (newOffset < 0) newOffset = 0.0;
-          }
+          start: scale,
+          end: targetScale,
+          onComplete: () {
+            // 2. Calculate new exact offset
+            double newOffset = 0.0;
 
-          // 3. Update UI & Jump Synchronously
-          // We jump immediately to prevent the 1-frame jitter.
-          // Flutter allows jumpTo during build/layout phase updates if handled carefully.
-          setState(() {
-            _groupMode = nextMode!;
-            _scaleNotifier.value = 1.0;
-          });
-          
-          if (_scrollController.hasClients) {
-             // We attempt to jump immediately. 
-             // Note: detailed clamping might be off until layout, but usually 
-             // switching Day->Month or Month->Day expands content or keeps it similar enough
-             _scrollController.jumpTo(newOffset);
+            if (anchorAsset != null) {
+              final List<PhotoGroup> nextGroups = _getGroupsForMode(nextMode!, provider);
+              final int nextCols = _getColsForMode(nextMode);
+
+              final double newAssetY = _calculateAssetY(anchorAsset, nextGroups, nextCols);
+
+              // Pin anchor to focal point
+              newOffset = newAssetY - _lastFocalPoint.dy;
+              if (newOffset < 0) newOffset = 0.0;
+            }
+
+            // 3. Update UI & Jump Synchronously
+            // We jump immediately to prevent the 1-frame jitter.
+            // Flutter allows jumpTo during build/layout phase updates if handled carefully.
+            setState(() {
+              _groupMode = nextMode!;
+              _scaleNotifier.value = 1.0;
+            });
+
+            if (_scrollController.hasClients) {
+              // We attempt to jump immediately.
+              // Note: detailed clamping might be off until layout, but usually
+              // switching Day->Month or Month->Day expands content or keeps it similar enough
+              _scrollController.jumpTo(newOffset);
+            }
           }
-        }
       );
     } else {
       _runScaleAnimation(start: scale, end: 1.0);
@@ -163,84 +165,70 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   // --- Helpers for Apple-Style Zoom Math ---
 
   int _getColsForMode(GroupMode mode) {
-     switch (mode) {
-       case GroupMode.day: return 3;
-       case GroupMode.month: return 5;
-       case GroupMode.year: return 7;
-     }
+    switch (mode) {
+      case GroupMode.day: return 3;
+      case GroupMode.month: return 5;
+      case GroupMode.year: return 7;
+    }
   }
 
   List<PhotoGroup> _getGroupsForMode(GroupMode mode, PhotoProvider provider) {
-     switch (mode) {
-       case GroupMode.day: return provider.groupedByDay;
-       case GroupMode.month: return provider.groupedByMonth;
-       case GroupMode.year: return provider.groupedByYear;
-     }
+    switch (mode) {
+      case GroupMode.day: return provider.groupedByDay;
+      case GroupMode.month: return provider.groupedByMonth;
+      case GroupMode.year: return provider.groupedByYear;
+    }
   }
 
-  AssetEntity? _findAssetAtOffset(double absoluteY, List<PhotoGroup> groups, int cols) {
+  GalleryItem? _findAssetAtOffset(double absoluteY, List<PhotoGroup> groups, int cols) {
     double yCursor = 0;
     const double headerHeight = 50.0;
-    final double itemHeight = (MediaQuery.of(context).size.width / cols); // spacing included in height calc usually? 
-    // Actually gridDelegate uses crossAxisSpacing. The item height is (width/cols). 
-    // MainAxisSpacing adds to total height.
-    // Let's approximate: height + 2.0 spacing.
     final double rowHeight = (MediaQuery.of(context).size.width / cols) + 2.0;
 
     for (final group in groups) {
       // Header
       if (absoluteY >= yCursor && absoluteY < yCursor + headerHeight) {
-         return group.assets.isNotEmpty ? group.assets.first : null; // Hit header, return first
+        return group.items.isNotEmpty ? group.items.first : null; // Hit header, return first
       }
       yCursor += headerHeight;
-      
-      final int rows = (group.assets.length / cols).ceil();
+
+      final int rows = (group.items.length / cols).ceil();
       final double groupBodyHeight = rows * rowHeight;
-      
+
       if (absoluteY < yCursor + groupBodyHeight) {
         // It's in this group grid
         final double localY = absoluteY - yCursor;
         final int row = (localY / rowHeight).floor();
         // Assume middle column for stability? Or just start of row.
         // Start of row is safest anchor.
-        final int index = row * cols; 
-        if (index < group.assets.length) return group.assets[index];
-        return group.assets.last;
+        final int index = row * cols;
+        if (index < group.items.length) return group.items[index];
+        return group.items.last;
       }
       yCursor += groupBodyHeight;
     }
     return null;
   }
 
-  double _calculateAssetY(AssetEntity target, List<PhotoGroup> groups, int cols) {
+  double _calculateAssetY(GalleryItem target, List<PhotoGroup> groups, int cols) {
     double yCursor = 0;
     const double headerHeight = 50.0;
     final double rowHeight = (MediaQuery.of(context).size.width / cols) + 2.0;
 
     for (final group in groups) {
       // Is target in this group?
-      // For speed, check date of group vs date of asset? 
-      // Or just simple list check. List check is O(N) but safer.
-      // Optimization: assets are usually sorted time desc. 
-      // But let's just 'contains' or manual loop.
-      // actually 'indexOf' is O(N).
-       
-      // Check bounds first to skip?
-      // if (target.createDateTime ...) - logic is complex due to group definitions.
-      // Let's just trust indexOf for now, typical gallery < 1000 groups, < 50 items/group avg.
-      
-      int index = group.assets.indexOf(target);
+      int index = group.items.indexOf(target);
       if (index != -1) {
-         // Found
-         yCursor += headerHeight;
-         final int row = index ~/ cols;
-         yCursor += row * rowHeight;
-         return yCursor;
+        // Found
+        yCursor += headerHeight;
+        final int row = index ~/ cols;
+        yCursor += row * rowHeight;
+        return yCursor;
       }
-      
+
       // Add this group's height
       yCursor += headerHeight;
-      final int rows = (group.assets.length / cols).ceil();
+      final int rows = (group.items.length / cols).ceil();
       yCursor += rows * rowHeight;
     }
     return 0.0; // Should not happen if asset exists
@@ -248,14 +236,14 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
 
   void _runScaleAnimation({required double start, required double end, VoidCallback? onComplete}) {
     _zoomAnimation = Tween<double>(begin: start, end: end).animate(
-      CurvedAnimation(parent: _zoomAnimateController, curve: Curves.easeInOutQuad)
+        CurvedAnimation(parent: _zoomAnimateController, curve: Curves.easeInOutQuad)
     );
-    
+
     _zoomAnimateController.reset();
     _zoomAnimateController.forward().then((_) {
       if (onComplete != null) onComplete();
     });
-    
+
     _zoomAnimation.addListener(() {
       _scaleNotifier.value = _zoomAnimation.value;
     });
@@ -296,18 +284,18 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
       ),
       body: Consumer<PhotoProvider>(
         builder: (context, provider, child) {
-          if (provider.isLoading && provider.allAssets.isEmpty) {
+          if (provider.isLoading && provider.allAssets.isEmpty && provider.remoteImages.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
           if (!provider.hasPermission) {
-             return Center(
+            return Center(
               child: ElevatedButton(
                 onPressed: provider.checkPermission,
                 child: const Text('Grant Permission'),
               ),
             );
           }
-           if (provider.allAssets.isEmpty) {
+           if (provider.groupedByDay.isEmpty && provider.groupedByMonth.isEmpty && provider.groupedByYear.isEmpty) {
             return const Center(child: Text('No photos found.'));
           }
 
@@ -331,7 +319,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
           }
 
           return GestureDetector(
-            behavior: HitTestBehavior.translucent, 
+            behavior: HitTestBehavior.translucent,
             onScaleStart: _onScaleStart,
             onScaleUpdate: _onScaleUpdate,
             onScaleEnd: _onScaleEnd,
@@ -345,7 +333,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                 builder: (context, scale, child) {
                   return Transform.scale(
                     scale: scale,
-                    alignment: _scaleAlignment, 
+                    alignment: _scaleAlignment,
                     child: child,
                   );
                 },
@@ -353,14 +341,14 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                   controller: _scrollController,
                   physics: const BouncingScrollPhysics(),
                   slivers: [
-                     for (var group in groups) ...[
-                       SliverPersistentHeader(
-                         pinned: false,
-                         delegate: SectionHeaderDelegate(
-                           title: _formatDate(group.date, _groupMode),
-                         ),
-                       ),
-                       SliverGrid(
+                    for (var group in groups) ...[
+                      SliverPersistentHeader(
+                        pinned: false,
+                        delegate: SectionHeaderDelegate(
+                          title: _formatDate(group.date, _groupMode),
+                        ),
+                      ),
+                      SliverGrid(
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: crossAxisCount,
                           crossAxisSpacing: 2,
@@ -368,17 +356,25 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                         ),
                         delegate: SliverChildBuilderDelegate(
                           (context, index) {
-                            final AssetEntity entity = group.assets[index];
-                             return ThumbnailWidget(
-                               entity: entity, 
-                               isFastScrolling: _isFastScrolling,
-                               heroTagPrefix: 'all_photos',
-                             );
+                            final GalleryItem item = group.items[index];
+                            if (item.type == GalleryItemType.local) {
+                               return ThumbnailWidget(
+                                 entity: item.local!,
+                                 isFastScrolling: _isFastScrolling,
+                                 heroTagPrefix: 'all_photos',
+                               );
+                            } else {
+                               return RemoteThumbnailWidget(
+                                  image: item.remote! 
+                                  // No fast scrolling optimized signal passed yet, but loads async
+                                  // RemoteThumbnailWidget handles loading state
+                               );
+                            }
                           },
-                          childCount: group.assets.length,
+                          childCount: group.items.length,
                         ),
                       ),
-                     ]
+                    ]
                   ],
                 ),
               ),
@@ -397,14 +393,14 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
               mainAxisSize: MainAxisSize.min,
               children: [
                 const SizedBox(
-                  width: 14, 
-                  height: 14, 
+                  width: 14,
+                  height: 14,
                   child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70)
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    status, 
+                    status,
                     style: const TextStyle(color: Colors.white70, fontSize: 12),
                     overflow: TextOverflow.ellipsis,
                   )

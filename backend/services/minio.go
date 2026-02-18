@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log"
+	"net/url"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -77,4 +79,27 @@ func ListFiles(prefix string) ([]string, error) {
 		files = append(files, object.Key)
 	}
 	return files, nil
+}
+
+// GetPresignedURL generates a presigned URL for a file
+func GetPresignedURL(objectName string, expiry time.Duration) (string, error) {
+	ctx := context.Background()
+	reqParams := make(url.Values)
+	// reqParams.Set("response-content-disposition", "attachment; filename=\"your-filename.txt\"")
+
+	presignedURL, err := MinioClient.PresignedGetObject(ctx, BucketName, objectName, expiry, reqParams)
+	if err != nil {
+		return "", err
+	}
+	return presignedURL.String(), nil
+}
+
+// GetPresignedPutURL generates a presigned URL for uploading a file
+func GetPresignedPutURL(objectName string, expiry time.Duration) (string, error) {
+	ctx := context.Background()
+	presignedURL, err := MinioClient.PresignedPutObject(ctx, BucketName, objectName, expiry)
+	if err != nil {
+		return "", err
+	}
+	return presignedURL.String(), nil
 }

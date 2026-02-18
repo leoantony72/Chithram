@@ -25,12 +25,32 @@ func main() {
 	// Connect to database
 	database.Connect()
 	// Auto migrate
-	database.DB.AutoMigrate(&models.User{})
+	database.DB.AutoMigrate(&models.User{}, &models.Image{})
 
 	// Init MinIO
 	services.InitMinio()
 
 	r := gin.Default()
+
+	// CORS Middleware
+	r.Use(func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+		if origin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	})
 
 	// Auth Endpoints
 	r.POST("/signup", controllers.Signup)
@@ -41,7 +61,12 @@ func main() {
 
 	// Image Endpoints
 	r.GET("/images", controllers.ListImages)
-	r.GET("/image/download", controllers.DownloadImage)
+	// r.GET("/image/download", controllers.DownloadImage) // Deprecated/Removed
+	r.POST("/images/register", controllers.RegisterImage)
+	r.POST("/images/upload_urls", controllers.GenerateUploadURLs)
+	r.GET("/images/checksums", controllers.GetChecksums)  // Add this
+	r.GET("/images/source_ids", controllers.GetSourceIDs) // Add this for fast deduplication
+	r.GET("/sync", controllers.SyncImages)
 
 	// Ensure models directory exists
 	modelsDir := "./models"

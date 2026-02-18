@@ -1,5 +1,6 @@
 objectData/
 .minio.sys/
+backend/chithram.db
 # Miscellaneous
 *.class
 *.log

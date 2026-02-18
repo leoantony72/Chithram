@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:go_router/go_router.dart';
 import '../../services/thumbnail_cache.dart';
+import '../../models/gallery_item.dart';
 
 class ThumbnailWidget extends StatefulWidget {
   final AssetEntity entity;
@@ -124,7 +125,7 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   Widget build(BuildContext context) {
     return RepaintBoundary(
       child: GestureDetector(
-        onTap: () => context.push('/viewer', extra: widget.entity),
+        onTap: () => context.push('/viewer', extra: GalleryItem.local(widget.entity)),
         child: Container(
           color: Colors.grey[900],
           child: Stack(

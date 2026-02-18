@@ -1,10 +1,10 @@
-import 'package:photo_manager/photo_manager.dart';
+import 'gallery_item.dart';
 
 class PhotoGroup {
   final DateTime date;
-  final List<AssetEntity> assets;
+  final List<GalleryItem> items;
 
-  PhotoGroup({required this.date, required this.assets});
+  PhotoGroup({required this.date, required this.items});
 }
 
 enum GroupMode {

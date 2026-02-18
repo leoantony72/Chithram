@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:collection/collection.dart';
@@ -11,10 +12,16 @@ import '../models/photo_group.dart';
 import '../services/backup_service.dart';
 import '../services/auth_service.dart';
 
+import '../models/gallery_item.dart';
+import '../models/remote_image.dart';
+
 class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> _paths = [];
   List<AssetEntity> _allAssets = [];
-  List<String> _remotePaths = []; // Added remotePaths
+  List<RemoteImage> _remoteImages = []; 
+
+  // Combined List
+  List<GalleryItem> _allItems = [];
   
   // Grouped data
   List<PhotoGroup> _groupedByDay = [];
@@ -34,21 +41,12 @@ class PhotoProvider with ChangeNotifier {
 
   List<AssetPathEntity> get paths => _paths;
   List<AssetEntity> get allAssets => _allAssets;
+  List<RemoteImage> get remoteImages => _remoteImages;
+  List<GalleryItem> get allItems => _allItems;
   
   List<PhotoGroup> get groupedByDay => _groupedByDay;
   List<PhotoGroup> get groupedByMonth => _groupedByMonth;
   List<PhotoGroup> get groupedByYear => _groupedByYear;
-  
-  List<String> get remotePaths => _remotePaths;
-
-  Future<void> _fetchRemotePhotos() async {
-    final session = await AuthService().loadSession();
-    if (session != null) {
-      final username = session['username'] as String;
-      _remotePaths = await BackupService().listServerFiles(username);
-      notifyListeners();
-    }
-  }
 
   Map<String, latlong.LatLng> get locationCache => _locationCache;
   bool get isLocationScanning => _isLocationScanning;
@@ -56,8 +54,36 @@ class PhotoProvider with ChangeNotifier {
   
   bool get hasPermission => _hasPermission;
   bool get isLoading => _isLoading;
+  
+  Future<void> _fetchRemotePhotos() async {
+    final session = await AuthService().loadSession();
+    if (session != null) {
+      final username = session['username'] as String;
+      final response = await BackupService().fetchRemoteImages(username);
+      if (response != null) {
+        _remoteImages = response.images;
+        // Re-group with new data
+        _groupAssets();
+        notifyListeners();
+      }
+    }
+  }
 
   Future<void> checkPermission() async {
+    if (kIsWeb) {
+      _hasPermission = true;
+      await fetchAssets();
+      notifyListeners();
+      return;
+    }
+    // Platform check is safe here because we returned if kIsWeb
+    if (Platform.isWindows) {
+      _hasPermission = true;
+      await fetchAssets();
+      notifyListeners();
+      return;
+    }
+
     final PermissionState ps = await PhotoManager.requestPermissionExtend();
     if (ps.isAuth) {
       _hasPermission = true;
@@ -80,49 +106,51 @@ class PhotoProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      final FilterOptionGroup option = FilterOptionGroup(
-        imageOption: const FilterOption(
-          needTitle: true,
-          sizeConstraint: SizeConstraint(ignoreSize: true),
-        ),
-        orders: [
-          OrderOption(type: OrderOptionType.createDate, asc: false),
-        ],
-      );
+      // Only attempt to fetch local assets on mobile platforms
+      bool isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
+      
+      if (isMobile) {
+        final FilterOptionGroup option = FilterOptionGroup(
+          imageOption: const FilterOption(
+            needTitle: true,
+            sizeConstraint: SizeConstraint(ignoreSize: true),
+          ),
+          orders: [
+            OrderOption(type: OrderOptionType.createDate, asc: false),
+          ],
+        );
 
-      _paths = await PhotoManager.getAssetPathList(
-        type: RequestType.common, 
-        filterOption: option,
-      );
+        _paths = await PhotoManager.getAssetPathList(
+          type: RequestType.common, 
+          filterOption: option,
+        );
 
-      if (_paths.isNotEmpty) {
-        final totalCount = await _paths.first.assetCountAsync;
-        
-        // Fast Start
-        final int firstBatchSize = 500;
-        final int initialFetch = totalCount < firstBatchSize ? totalCount : firstBatchSize;
-        
-        _allAssets = await _paths.first.getAssetListRange(start: 0, end: initialFetch);
-        _groupAssets();
-        
-        _isLoading = false;
-        notifyListeners(); 
+        if (_paths.isNotEmpty) {
+          final totalCount = await _paths.first.assetCountAsync;
+          
+          // Fast Start
+          final int firstBatchSize = 500;
+          final int initialFetch = totalCount < firstBatchSize ? totalCount : firstBatchSize;
+          
+          _allAssets = await _paths.first.getAssetListRange(start: 0, end: initialFetch);
+          _groupAssets();
+          notifyListeners(); 
 
-        // Background Load rest
-        if (totalCount > initialFetch) {
-           await _fetchRemainingAssets(initialFetch, totalCount); // Await this to ensure all local assets are loaded
+          // Background Load rest
+          if (totalCount > initialFetch) {
+             await _fetchRemainingAssets(initialFetch, totalCount);
+          }
+           
+           await startLocationScan(); 
         }
-        
-        // After all local assets are loaded and grouped, start location scan and fetch remote photos
-        await startLocationScan(); 
-        await _fetchRemotePhotos(); 
+      } 
+      
+      // Always fetch remote photos regardless of platform or local assets
+      await _fetchRemotePhotos(); 
 
-      } else {
-        _isLoading = false;
-        notifyListeners();
-      }
     } catch (e) {
       debugPrint("Error fetching assets: $e");
+    } finally {
       _isLoading = false;
       notifyListeners();
     }
@@ -142,7 +170,7 @@ class PhotoProvider with ChangeNotifier {
       }
       
       _groupAssets();
-      notifyListeners();
+      // notifyListeners(); // Avoid too many updates
       
       startLocationScan();
       
@@ -151,34 +179,56 @@ class PhotoProvider with ChangeNotifier {
     }
   }
 
+  // Update _groupAssets to merge and group
   void _groupAssets() {
+    // Deduplication: Only show remote images that are NOT present locally
+    final Set<String> localIds = _allAssets.map((e) => e.id).toSet();
+    
+    final List<RemoteImage> uniqueRemote = _remoteImages.where((remote) {
+       // If sourceId matches a local asset ID, we skip the remote one (prefer local)
+       if (remote.sourceId != null && localIds.contains(remote.sourceId)) {
+          return false; 
+       }
+       return true;
+    }).toList();
+
+    // 1. Combine
+    _allItems = [
+      ..._allAssets.map((e) => GalleryItem.local(e)),
+      ...uniqueRemote.map((e) => GalleryItem.remote(e))
+    ];
+    
+    // 2. Sort DESC
+    _allItems.sort((a, b) => b.date.compareTo(a.date));
+
+    // 3. Group
     // Group by Day
-    final Map<DateTime, List<AssetEntity>> dayGroups = groupBy(_allAssets, (AssetEntity e) {
-      return DateTime(e.createDateTime.year, e.createDateTime.month, e.createDateTime.day);
+    final Map<DateTime, List<GalleryItem>> dayGroups = groupBy(_allItems, (GalleryItem e) {
+       return DateTime(e.date.year, e.date.month, e.date.day);
     });
 
     _groupedByDay = dayGroups.entries.map((entry) {
-      return PhotoGroup(date: entry.key, assets: entry.value);
+      return PhotoGroup(date: entry.key, items: entry.value);
     }).toList();
     _groupedByDay.sort((a, b) => b.date.compareTo(a.date));
 
     // Group by Month
-    final Map<DateTime, List<AssetEntity>> monthGroups = groupBy(_allAssets, (AssetEntity e) {
-      return DateTime(e.createDateTime.year, e.createDateTime.month);
+    final Map<DateTime, List<GalleryItem>> monthGroups = groupBy(_allItems, (GalleryItem e) {
+      return DateTime(e.date.year, e.date.month);
     });
 
     _groupedByMonth = monthGroups.entries.map((entry) {
-      return PhotoGroup(date: entry.key, assets: entry.value);
+      return PhotoGroup(date: entry.key, items: entry.value);
     }).toList();
     _groupedByMonth.sort((a, b) => b.date.compareTo(a.date));
 
     // Group by Year
-    final Map<DateTime, List<AssetEntity>> yearGroups = groupBy(_allAssets, (AssetEntity e) {
-      return DateTime(e.createDateTime.year);
+    final Map<DateTime, List<GalleryItem>> yearGroups = groupBy(_allItems, (GalleryItem e) {
+      return DateTime(e.date.year);
     });
 
     _groupedByYear = yearGroups.entries.map((entry) {
-      return PhotoGroup(date: entry.key, assets: entry.value);
+      return PhotoGroup(date: entry.key, items: entry.value);
     }).toList();
     _groupedByYear.sort((a, b) => b.date.compareTo(a.date));
   }
@@ -254,6 +304,7 @@ class PhotoProvider with ChangeNotifier {
   }
   
   Future<void> _loadLocationCache() async {
+    if (kIsWeb) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/location_cache.json');
@@ -273,6 +324,7 @@ class PhotoProvider with ChangeNotifier {
   }
 
   Future<void> _saveLocationCache() async {
+    if (kIsWeb) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/location_cache.json');
