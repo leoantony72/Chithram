@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:convert';
 import 'dart:async';
+import 'package:sqflite/sqflite.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as path;
 import 'package:photo_manager/photo_manager.dart';
@@ -615,10 +616,17 @@ class BackupService {
 
       final faces = await _db.getAllFaces();
       final clusters = await _db.getAllClustersWithThumbnail();
+      final processed = await (await _db.database).query('processed_images');
       
       final Map<String, dynamic> exportData = {
          'faces': [],
-         'clusters': clusters,
+         'clusters': clusters.map((c) => {
+            'id': c['id'],
+            'name': c['name'],
+            'thumbnail': c['thumbnail'] != null ? base64Encode(c['thumbnail'] as Uint8List) : null,
+            'representative_face_id': c['representative_face_id'],
+         }).toList(),
+         'processed_images': processed.map((p) => p['image_path']).toList(),
       };
 
       for (var f in faces) {
@@ -643,6 +651,7 @@ class BackupService {
             'landmarks': f['landmarks'], 
             'embedding': vector,
             'thumbnail': f['thumbnail'] != null ? base64Encode(f['thumbnail'] as Uint8List) : null,
+            'fl_trained': f['fl_trained'] ?? 0,
          });
       }
 
@@ -651,7 +660,36 @@ class BackupService {
       final urls = await _getUploadUrls(userId, 'faces_blob', ['faces']);
       if (urls == null || !urls.containsKey('faces')) return false;
 
-      return await _encryptAndUpload(urls['faces']!, Uint8List.fromList(jsonBytes), masterKey, 'faces');
+      final success = await _encryptAndUpload(urls['faces']!, Uint8List.fromList(jsonBytes), masterKey, 'faces');
+      if (!success) return false;
+
+      // Register new version
+      try {
+          final uri = Uri.parse('$_baseUrl/images/faces/register?user_id=$userId');
+          final response = await http.post(uri);
+          if (response.statusCode == 200) {
+              final newVersion = jsonDecode(response.body)['version'] as int;
+              await _db.setBackupSetting('people_data_version', newVersion.toString());
+              print('BackupService: People version registered: $newVersion');
+          }
+      } catch (e) {
+          print('BackupService: Error registering people version: $e');
+      }
+      
+      return true;
+  }
+
+  Future<int> getRemotePeopleVersion(String userId) async {
+      try {
+          final uri = Uri.parse('$_baseUrl/images/faces/version?user_id=$userId');
+          final response = await http.get(uri);
+          if (response.statusCode == 200) {
+              return jsonDecode(response.body)['version'] as int;
+          }
+      } catch (e) {
+          print('BackupService: Error getting remote people version: $e');
+      }
+      return -1;
   }
 
   Future<bool> downloadFaceDatabase({bool inMemoryOnly = false}) async {
@@ -665,7 +703,10 @@ class BackupService {
       final response = await http.get(uri);
       if (response.statusCode != 200) return false;
 
-      final url = jsonDecode(response.body)['url'] as String;
+      final resBody = jsonDecode(response.body);
+      final url = resBody['url'] as String;
+      final version = resBody['version'] as int;
+
       final bytes = await fetchAndDecryptFromUrl(url, masterKey);
       if (bytes == null) return false;
 
@@ -674,30 +715,54 @@ class BackupService {
 
       if (inMemoryOnly) {
          // Optionally you can keep it just in memory and replace standard getters.
-         // Web apps might need to overwrite local indexedDB using Sqflite FFI web though,
-         // but if the db works, we can just insert it straight via standard insert!
       }
 
       final db = await _db.database;
       await db.delete('faces');
       await db.delete('clusters');
+      await db.delete('processed_images');
 
       final clusters = data['clusters'] as List<dynamic>;
       for (var c in clusters) {
+         Uint8List? thumbBytes;
+         if (c['thumbnail'] != null) {
+            if (c['thumbnail'] is String) {
+               thumbBytes = base64Decode(c['thumbnail']);
+            } else {
+               thumbBytes = Uint8List.fromList(List<int>.from(c['thumbnail']));
+            }
+         }
          await db.insert('clusters', {
              'id': c['id'],
              'name': c['name'],
-             'thumbnail': c['thumbnail'] != null ? base64Decode(c['thumbnail']) : null,
+             'thumbnail': thumbBytes,
+             'representative_face_id': c['representative_face_id'],
          });
+      }
+
+      if (data.containsKey('processed_images')) {
+          final processed = data['processed_images'] as List<dynamic>;
+          for (var path in processed) {
+              await db.insert('processed_images', {'image_path': path}, conflictAlgorithm: ConflictAlgorithm.ignore);
+          }
       }
 
       final importedFaces = data['faces'] as List<dynamic>;
       for (var f in importedFaces) {
          Uint8List? embBytes;
          if (f['embedding'] != null) {
-            final List<double> dlist = List<double>.from(f['embedding']);
-            embBytes = Float32List.fromList(dlist).buffer.asUint8List();
+            final List<dynamic> dlist = f['embedding'];
+            embBytes = Float32List.fromList(dlist.map((e) => e.toDouble()).toList().cast<double>()).buffer.asUint8List();
          }
+         Uint8List? thumbBytes;
+         if (f['thumbnail'] != null) {
+            if (f['thumbnail'] is String) {
+               thumbBytes = base64Decode(f['thumbnail']);
+            } else {
+               thumbBytes = Uint8List.fromList(List<int>.from(f['thumbnail']));
+            }
+         }
+
          await db.insert('faces', {
              'id': f['id'],
              'cluster_id': f['cluster_id'],
@@ -705,9 +770,13 @@ class BackupService {
              'bbox': f['bbox'],
              'landmarks': f['landmarks'],
              'embedding': embBytes,
-             'thumbnail': f['thumbnail'] != null ? base64Decode(f['thumbnail']) : null,
+             'thumbnail': thumbBytes,
+             'fl_trained': f['fl_trained'] ?? 0,
          });
       }
+
+      // Mark version locally
+      await _db.setBackupSetting('people_data_version', version.toString());
 
       return true;
   }

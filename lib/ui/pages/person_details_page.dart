@@ -12,6 +12,7 @@ import '../../services/backup_service.dart';
 import '../../models/remote_image.dart';
 import '../widgets/section_header_delegate.dart';
 import '../widgets/remote_photo_viewer.dart';
+import 'package:extended_image/extended_image.dart';
 
 class PersonDetailsPage extends StatefulWidget {
   final String personName;
@@ -106,9 +107,18 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
           TextButton(
             onPressed: () async {
               if (controller.text.isNotEmpty) {
-                 await _dbService.updateClusterName(widget.personId, controller.text);
-                 setState(() => _currentName = controller.text);
+                 final newName = controller.text;
+                 await _dbService.updateClusterName(widget.personId, newName);
+                 if (mounted) setState(() => _currentName = newName);
                  Navigator.pop(context);
+                 
+                 // Trigger Cloud Sync
+                 if (mounted) {
+                   ScaffoldMessenger.of(context).showSnackBar(
+                     const SnackBar(content: Text('Name updated. Syncing to cloud...'), duration: Duration(seconds: 2)),
+                   );
+                 }
+                 await BackupService().uploadFaceDatabase();
               }
             },
             child: const Text('Save'),
@@ -253,9 +263,16 @@ class _CloudPhotoTileState extends State<_CloudPhotoTile> {
           if (_remoteImage != null) {
               Navigator.push(context, MaterialPageRoute(
                  builder: (_) => Scaffold(
-                    appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0),
+                    extendBodyBehindAppBar: true,
+                    appBar: AppBar(
+                      backgroundColor: Colors.transparent, 
+                      elevation: 0,
+                      iconTheme: const IconThemeData(color: Colors.white),
+                    ),
                     backgroundColor: Colors.black,
-                    body: RemotePhotoViewer(remote: _remoteImage!, isActive: true)
+                    body: Center(
+                      child: RemotePhotoViewer(remote: _remoteImage!, isActive: true),
+                    ),
                  )
               ));
           }
@@ -285,9 +302,34 @@ class _SimplePhotoViewer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0),
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent, 
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
       backgroundColor: Colors.black,
-      body: Center(child: kIsWeb ? const Text('Not supported on Web') : Image.file(file)),
+      body: Center(
+        child: kIsWeb 
+            ? const Text('Not supported on Web', style: TextStyle(color: Colors.white)) 
+            : ExtendedImage.file(
+                file, 
+                fit: BoxFit.contain,
+                mode: ExtendedImageMode.gesture,
+                onDoubleTap: (state) {
+                   final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
+                   double targetScale = 1.0;
+                   if (beginScale <= 1.001) targetScale = 3.0;
+                   state.handleDoubleTap(scale: targetScale, doubleTapPosition: state.pointerDownPosition);
+                },
+                initGestureConfigHandler: (state) => GestureConfig(
+                   inPageView: false,
+                   minScale: 0.9,
+                   maxScale: 10.0,
+                   cacheGesture: true,
+                ),
+              ),
+      ),
     );
   }
 }

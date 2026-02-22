@@ -13,6 +13,7 @@ import '../../services/model_service.dart';
 import '../../services/database_service.dart';
 import '../../services/face_service.dart';
 import '../../services/cluster_service.dart';
+import '../../services/federated_learning_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/backup_service.dart';
 import '../../services/crypto_service.dart';
@@ -32,13 +33,44 @@ class _PeoplePageState extends State<PeoplePage> {
 
   List<Map<String, dynamic>> _clusters = [];
   bool _isScanning = false;
+  bool _isTraining = false;
+  double _trainingProgress = 0.0;
   String _statusMessage = '';
 
   @override
   void initState() {
     super.initState();
     _loadClusters();
+    _checkSync();
     _initializeServices();
+  }
+
+  Future<void> _checkSync() async {
+    final session = await AuthService().loadSession();
+    if (session == null) return;
+    final userId = session['username'] as String;
+
+    final remoteVersion = await BackupService().getRemotePeopleVersion(userId);
+    if (remoteVersion == -1) return;
+
+    final localVersionStr = await _dbService.getBackupSetting('people_data_version');
+    final localVersion = int.tryParse(localVersionStr ?? '0') ?? 0;
+
+    if (remoteVersion > localVersion) {
+      debugPrint('Sync: Remote version ($remoteVersion) > Local ($localVersion). Downloading...');
+      setState(() {
+        _isScanning = true;
+        _statusMessage = 'Syncing from Cloud...';
+      });
+      final success = await BackupService().downloadFaceDatabase(inMemoryOnly: kIsWeb);
+      if (success) {
+        await _loadClusters();
+      }
+      setState(() {
+        _isScanning = false;
+        _statusMessage = success ? 'Sync Complete' : 'Sync Failed';
+      });
+    }
   }
 
   Future<void> _initializeServices() async {
@@ -57,8 +89,25 @@ class _PeoplePageState extends State<PeoplePage> {
 
   Future<void> _loadClusters() async {
     final clusters = await _dbService.getAllClustersWithThumbnail();
+    
+    // Sort: People with actual names first
+    final sortedClusters = List<Map<String, dynamic>>.from(clusters);
+    final personPattern = RegExp(r'^Person \d+$');
+
+    sortedClusters.sort((a, b) {
+      final nameA = a['name'] as String? ?? '';
+      final nameB = b['name'] as String? ?? '';
+      
+      final isDefaultA = nameA.isEmpty || personPattern.hasMatch(nameA);
+      final isDefaultB = nameB.isEmpty || personPattern.hasMatch(nameB);
+      
+      if (!isDefaultA && isDefaultB) return -1;
+      if (isDefaultA && !isDefaultB) return 1;
+      return nameA.compareTo(nameB); // Secondary sort alphabetically
+    });
+
     setState(() {
-      _clusters = clusters;
+      _clusters = sortedClusters;
     });
   }
 
@@ -91,6 +140,7 @@ class _PeoplePageState extends State<PeoplePage> {
       return;
     }
 
+    await _faceService.reset();
     await _faceService.initialize();
 
     // Pipeline Execution
@@ -105,9 +155,12 @@ class _PeoplePageState extends State<PeoplePage> {
        await _scanClusteringPhase();
     }
     
+    setState(() => _statusMessage = 'Uploading to Cloud...');
+    final uploadSuccess = await BackupService().uploadFaceDatabase();
+    
     setState(() {
       _isScanning = false;
-      _statusMessage = 'Scan Complete';
+      _statusMessage = uploadSuccess ? 'Scan & Cloud Sync Complete' : 'Scan Complete (Upload Failed)';
     });
     _loadClusters();
   }
@@ -471,8 +524,37 @@ class _PeoplePageState extends State<PeoplePage> {
                  if (v == 'clear_db') _resetDatabase();
                  if (v == 'upload_db') _uploadDb();
                  if (v == 'download_db') _downloadDb();
+                                   if (v == 'train') {
+                     setState(() {
+                        _isTraining = true;
+                        _trainingProgress = 0.0;
+                        _statusMessage = 'Initializing Training...';
+                     });
+                     FederatedLearningService().trainAndUpload(onProgress: (p, s) {
+                        if (mounted) {
+                           setState(() {
+                              if (p >= 0) _trainingProgress = p;
+                              _statusMessage = s;
+                           });
+                        }
+                     }).then((_) {
+                        if (mounted) {
+                           setState(() {
+                              _isTraining = false;
+                           });
+                        }
+                     });
+                  }
               },
               itemBuilder: (context) => [
+                 const PopupMenuItem(value: 'train', child: Row(
+                    children: [
+                       Icon(Icons.model_training_rounded, color: Colors.blueAccent),
+                       SizedBox(width: 8),
+                       Text('Improve Models (AI Training)'),
+                    ],
+                 )),
+                 const PopupMenuDivider(),
                  const PopupMenuItem(value: 'download_db', child: Text('Restore AI from Cloud')),
                  const PopupMenuItem(value: 'upload_db', child: Text('Backup AI to Cloud')),
                  const PopupMenuDivider(),
@@ -480,7 +562,7 @@ class _PeoplePageState extends State<PeoplePage> {
                  const PopupMenuItem(value: 'clear_db', child: Text('Reset People Database')),
               ],
             ),
-          if (_isScanning)
+          if (_isScanning || _isTraining)
             Center(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -495,8 +577,17 @@ class _PeoplePageState extends State<PeoplePage> {
             ),
         ],
       ),
-      body: _clusters.isEmpty
-          ? Center(
+      body: Column(
+        children: [
+          if (_isTraining)
+            LinearProgressIndicator(
+              value: _trainingProgress,
+              backgroundColor: Colors.white10,
+              valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+            ),
+          Expanded(
+            child: _clusters.isEmpty
+                ? Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -534,23 +625,19 @@ class _PeoplePageState extends State<PeoplePage> {
               ),
             )
           : GridView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-              gridDelegate: kIsWeb
-                  ? const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 6,
-                      mainAxisSpacing: 4,
-                      crossAxisSpacing: 4,
-                      childAspectRatio: 0.85,
-                    )
-                  : const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 220,
-                      mainAxisSpacing: 4,
-                      crossAxisSpacing: 4,
-                      childAspectRatio: 0.85,
-                    ),
+              padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: MediaQuery.of(context).size.width < 600 ? 3 : 6,
+                mainAxisSpacing: 16,
+                crossAxisSpacing: 16,
+                childAspectRatio: 0.75,
+              ),
               itemCount: _clusters.length,
               itemBuilder: (context, index) {
                 final cluster = _clusters[index];
+                final String name = cluster['name'] ?? 'Person ${cluster['id']}';
+                final Uint8List? thumb = cluster['thumbnail'] as Uint8List?;
+
                 return MouseRegion(
                   cursor: SystemMouseCursors.click,
                   child: GestureDetector(
@@ -558,7 +645,7 @@ class _PeoplePageState extends State<PeoplePage> {
                       await context.push(
                         '/person_details',
                         extra: {
-                          'name': cluster['name'] ?? 'Person ${cluster['id']}',
+                          'name': name,
                           'id': cluster['id'],
                         },
                       );
@@ -568,31 +655,36 @@ class _PeoplePageState extends State<PeoplePage> {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Expanded(
-                          child: AspectRatio(
-                            aspectRatio: 1,
-                            child: Hero(
-                              tag: 'person_${cluster['id']}',
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                     BoxShadow(
-                                        color: Colors.black.withOpacity(0.5),
-                                        blurRadius: 12,
-                                        offset: const Offset(0, 6)
-                                     )
-                                  ],
-                                ),
-                                child: ClipOval(
-                                    child: _buildFaceThumbnail(cluster['thumbnail'] as Uint8List?)
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(8.0),
+                              child: AspectRatio(
+                                aspectRatio: 1,
+                              child: Hero(
+                                tag: 'person_${cluster['id']}',
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(0.4),
+                                        blurRadius: 10,
+                                        offset: const Offset(0, 4),
+                                      ),
+                                    ],
+                                  ),
+                                  child: ClipOval(
+                                    child: _buildFaceThumbnail(thumb),
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
+                      ),
                         const SizedBox(height: 12),
                         Text(
-                          cluster['name'] ?? 'Person ${cluster['id']}',
+                          name,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 15,
@@ -608,6 +700,9 @@ class _PeoplePageState extends State<PeoplePage> {
                 );
               },
             ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -616,8 +711,9 @@ class _PeoplePageState extends State<PeoplePage> {
         return Image.memory(
            thumbBytes, 
            fit: BoxFit.cover,
-           filterQuality: FilterQuality.high,
+           filterQuality: FilterQuality.medium,
            gaplessPlayback: true,
+           isAntiAlias: true,
         );
     }
     return Container(

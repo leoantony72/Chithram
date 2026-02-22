@@ -21,4 +21,6 @@ type User struct {
 	// Encrypted Private Key Data
 	EncryptedPrivateKey string `json:"encrypted_private_key"` // Stored on server, decrypted by MasterKey
 	PrivateKeyNonce     string `json:"private_key_nonce"`     // Nonce for private key encryption
+
+	PeopleVersion int `json:"people_version" gorm:"default:0"`
 }

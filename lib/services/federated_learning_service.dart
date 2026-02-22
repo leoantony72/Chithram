@@ -7,6 +7,12 @@ import 'package:flutter/foundation.dart';
 import 'package:fl_training_plugin/fl_training_plugin.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:sodium_libs/sodium_libs_sumo.dart';
+import 'auth_service.dart';
+import 'backup_service.dart';
+import 'crypto_service.dart';
+import 'database_service.dart';
+import 'model_service.dart';
 
 class FederatedLearningService {
   static String get serverUrl {
@@ -19,96 +25,168 @@ class FederatedLearningService {
   static const String globalModelFilename = "face-detection.onnx";
   static const String lastUpdatedKey = "fl_last_updated";
 
+  final ModelService _modelService = ModelService();
+
   Future<void> init() async {
-    // Check if we need to download the initial global model
-    final appDir = await getApplicationDocumentsDirectory();
-    final modelFile = File('${appDir.path}/$globalModelFilename');
-    
-    if (!await modelFile.exists()) {
-      await _downloadGlobalModel();
-    }
+    await _modelService.ensureModelsDownloaded();
   }
 
   Future<void> _downloadGlobalModel() async {
-    try {
-      final response = await http.get(Uri.parse('$serverUrl/fl/global'));
-      if (response.statusCode == 200) {
-        final appDir = await getApplicationDocumentsDirectory();
-        final file = File('${appDir.path}/$globalModelFilename');
-        await file.writeAsBytes(response.bodyBytes);
-        debugPrint("Downloaded global model to ${file.path}");
-      } else {
-        debugPrint("Failed to download global model: ${response.statusCode}");
-      }
-    } catch (e) {
-      debugPrint("Error downloading global model: $e");
-    }
+    await _modelService.ensureModelsDownloaded();
   }
 
 
 
-  Future<void> trainAndUpload() async {
+  Future<void> trainAndUpload({void Function(double progress, String status)? onProgress}) async {
+    onProgress?.call(0, "Checking for latest model...");
+    await _downloadGlobalModel();
+    
     final appDir = await getApplicationDocumentsDirectory();
     final modelFile = File('${appDir.path}/$globalModelFilename');
     
     if (!await modelFile.exists()) {
-      debugPrint("No base model to train on.");
+      onProgress?.call(0, "No base model found.");
       return;
     }
 
-    // 3. Define output path for the locally trained model update
-    // The trainer will save the weights to <modelPath>_updated.onnx
     final updatedModelPath = "${modelFile.path}_updated.onnx";
     final updatedFile = File(updatedModelPath);
 
     if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
-      debugPrint("Starting Active Desktop Federated Learning training via Local Python child process...");
-      try {
+      onProgress?.call(0, "Preparing Training Data...");
+      
+      final trainCacheDir = Directory('${appDir.path}/train_cache');
+      if (await trainCacheDir.exists()) await trainCacheDir.delete(recursive: true);
+      await trainCacheDir.create();
+
+        try {
+          final untreatedFaces = await DatabaseService().getUntrainedFaces(limit: 40);
+          final totalUntrainedCount = await DatabaseService().getTotalUntrainedCount();
+          
+          if (untreatedFaces.isNotEmpty) {
+             final firstId = untreatedFaces.first['id'];
+             final lastId = untreatedFaces.last['id'];
+             debugPrint("Selected ${untreatedFaces.length} faces (IDs: $firstId to $lastId) from $totalUntrainedCount total pending.");
+             onProgress?.call(0, "Training Batch (Remaining: $totalUntrainedCount)...");
+          }
+
+          if (untreatedFaces.isEmpty) {
+            onProgress?.call(1.0, "All available local data already processed.");
+            return;
+          }
+
+        final session = await AuthService().loadSession();
+        if (session == null) {
+          onProgress?.call(0, "Auth session required.");
+          return;
+        }
+        final userId = session['username'] as String;
+        final masterKeyBytes = session['masterKey'] as Uint8List;
+        final masterKey = SecureKey.fromList(CryptoService().sodium, masterKeyBytes);
+
+        final Set<String> downloadedIds = {};
+        for (int i = 0; i < untreatedFaces.length; i++) {
+          final face = untreatedFaces[i];
+          final path = face['image_path'] as String;
+          if (path.startsWith('cloud_')) {
+            final imageId = path.substring(6).trim();
+            if (downloadedIds.contains(imageId)) continue;
+            
+            onProgress?.call(i / untreatedFaces.length * 0.2, "Decrypting images...");
+            downloadedIds.add(imageId);
+            
+            final remote = await BackupService().fetchSingleRemoteImage(userId, imageId);
+            if (remote != null) {
+              final bytes = await BackupService().fetchAndDecryptFromUrl(remote.originalUrl, masterKey);
+              if (bytes != null) {
+                 await File('${trainCacheDir.path}/$imageId.jpg').writeAsBytes(bytes);
+              }
+            }
+          }
+        }
+
         final dbPathStr = await getDatabasesPath();
         final sqliteDbPath = join(dbPathStr, 'chithram_faces.db');
 
+        onProgress?.call(0.2, "Starting AI Engine...");
         final String pythonCmd = !kIsWeb && Platform.isWindows ? '.venv\\Scripts\\python.exe' : 'python';
         final process = await Process.start(pythonCmd, [
           'scripts/desktop_train.py',
           modelFile.path,
           updatedModelPath,
           sqliteDbPath,
+          trainCacheDir.path,
         ]);
         
-        // Stream the machine learning training progress live to the Flutter console
         process.stdout.transform(SystemEncoding().decoder).listen((data) {
-          debugPrint(data.trim());
+          final lines = data.split('\n');
+          for (var line in lines) {
+            line = line.trim();
+            if (line.startsWith("PROGRESS: ")) {
+              try {
+                final parts = line.substring(10).split('/');
+                final current = double.parse(parts[0]);
+                final total = double.parse(parts[1]);
+                // Scale progress to 20% - 90% range
+                onProgress?.call(0.2 + (current / total * 0.7), "Training AI Model...");
+              } catch (_) {}
+            } else if (line.startsWith("STATUS: ")) {
+              onProgress?.call(-1, line.substring(8)); // -1 means keep current progress
+            }
+            debugPrint(line);
+          }
         });
         
         process.stderr.transform(SystemEncoding().decoder).listen((data) {
-          debugPrint("Python Error/Warning: ${data.trim()}");
+           debugPrint("Python Error: ${data.trim()}");
         });
         
         final exitCode = await process.exitCode;
-        if (exitCode != 0) {
-          debugPrint("Failed to complete desktop python training. Exit code: $exitCode");
-          return;
+        if (await trainCacheDir.exists()) await trainCacheDir.delete(recursive: true);
+
+        if (exitCode == 0) {
+           // Mark faces as trained in local DB to ensure persistence
+           final db = await DatabaseService().database;
+           for (final face in untreatedFaces) {
+             final id = face['id'];
+             await db.update('faces', {'fl_trained': 1}, where: 'id = ?', whereArgs: [id]);
+           }
+           debugPrint("Marked ${untreatedFaces.length} faces as trained in Dart.");
+           
+           // PROACTIVE: Sync this training status to the cloud database immediately
+           onProgress?.call(0.95, "Syncing training status to cloud...");
+           try {
+             await BackupService().uploadFaceDatabase();
+             debugPrint("Face database synced to cloud after training.");
+           } catch (e) {
+             debugPrint("Failed to sync face database after training: $e");
+           }
+        } else if (exitCode == 3) { // Exit code 3 is our "Already Trained" signal
+           onProgress?.call(1.0, "All data already processed.");
+           return;
+        } else if (exitCode != 0 && exitCode != 1) { 
+           onProgress?.call(0, "Training process failed (Exit: $exitCode)");
+           return;
         }
 
-        debugPrint("Desktop Training block finished successfully.");
+        onProgress?.call(0.9, "Uploading local improvements...");
       } catch (e) {
-        debugPrint("Failed to launch desktop python training: $e");
+        onProgress?.call(0, "Training failed: $e");
         return;
       }
     } else {
-      debugPrint("Starting active local training via PyTorch Mobile plugin...");
+      onProgress?.call(0.5, "Mobile training started...");
       try {
-        // Execute Training using Native Plugin for Mobile edge
         await FlTrainingPlugin.train(modelFile.path, 1, 32); 
-        debugPrint("Training completed.");
+        onProgress?.call(0.9, "Training completed. Uploading...");
       } catch (e) {
-        debugPrint("Mobile training failed: $e");
+        onProgress?.call(0, "Mobile training failed: $e");
         return;
       }
     }
 
     if (!await updatedFile.exists()) {
-       debugPrint("Updated model file not found at $updatedModelPath");
+       onProgress?.call(0, "Update file generation failed.");
        return;
     }
     
@@ -125,17 +203,14 @@ class FederatedLearningService {
       
       var res = await request.send();
       if (res.statusCode == 200) {
-        debugPrint("Uploaded local update successfully.");
+        onProgress?.call(1.0, "Success! Model improved and uploaded.");
         final prefs = await SharedPreferences.getInstance();
         await prefs.setInt(lastUpdatedKey, DateTime.now().millisecondsSinceEpoch);
-        
-        // Cleanup?
-        // await updatedFile.delete();
       } else {
-        debugPrint("Failed to upload update: ${res.statusCode}");
+        onProgress?.call(0, "Upload failed: ${res.statusCode}");
       }
     } catch (e) {
-      debugPrint("Error uploading update: $e");
+      onProgress?.call(0, "Upload error: $e");
     }
   }
 }

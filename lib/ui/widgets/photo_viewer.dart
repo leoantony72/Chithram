@@ -96,14 +96,11 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
         gaplessPlayback: true, 
         enableSlideOutPage: false,
         onDoubleTap: (ExtendedImageGestureState state) {
-          final double pointerDownPosition = state.pointerDownPosition?.dx ?? 0;
           final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
-          double targetScale;
+          double targetScale = 1.0;
 
-          if (beginScale > 1.001) {
-            targetScale = 1.0;
-          } else {
-            targetScale = 3.0;
+          if (beginScale <= 1.001) {
+            targetScale = 3.0; // Zoom in
           }
 
           state.handleDoubleTap(
@@ -119,15 +116,16 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
         },
         initGestureConfigHandler: (state) {
           return GestureConfig(
-            minScale: 0.8, 
-            animationMinScale: 0.6,
-            maxScale: 5.0, 
-            animationMaxScale: 6.0,
+            minScale: 0.9, 
+            animationMinScale: 0.7,
+            maxScale: 10.0, 
+            animationMaxScale: 12.0,
             speed: 1.0,
-            inertialSpeed: 120.0,
+            inertialSpeed: 100.0,
             initialScale: 1.0,
             inPageView: true,
             initialAlignment: InitialAlignment.center,
+            cacheGesture: true,
           );
         },
         loadStateChanged: (ExtendedImageState state) {

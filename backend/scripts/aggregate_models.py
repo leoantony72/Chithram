@@ -42,7 +42,7 @@ def average_weights(weight_list):
     
     for key in keys:
         # Sum up weights for this key across all models
-        total = np.zeros_as_array(first_weights[key]) # ensure same shape
+        total = np.zeros_like(first_weights[key]) # ensure same shape
         count = 0 
         
         for w in weight_list:

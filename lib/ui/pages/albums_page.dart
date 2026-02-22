@@ -326,7 +326,7 @@ class _AlbumCardState extends State<AlbumCard> {
         if (widget.album.localPath != null) {
           context.push('/album_details', extra: widget.album.localPath);
         } else {
-          context.push('/cloud_album_details', extra: {'name': widget.album.name});
+          context.push('/albums/${Uri.encodeComponent(widget.album.name)}');
         }
       },
       child: Container(

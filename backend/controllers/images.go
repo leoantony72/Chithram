@@ -247,11 +247,17 @@ func GetSourceIDs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"source_ids": sourceIDs})
 }
 
-// GetFacesDownloadURL generates a presigned GET URL to download the user's master encrypted faces blob
+// GetFacesDownloadURL generates a presigned GET URL to download the user's master encrypted faces blob and includes the current version
 func GetFacesDownloadURL(c *gin.Context) {
 	userID := c.Query("user_id")
 	if userID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var user models.User
+	if err := database.DB.Where("username = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
@@ -262,7 +268,56 @@ func GetFacesDownloadURL(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"url": url})
+	c.JSON(http.StatusOK, gin.H{
+		"url":     url,
+		"version": user.PeopleVersion,
+	})
+}
+
+// RegisterPeopleVersion updates the people_version for a user and returns the new version
+func RegisterPeopleVersion(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var user models.User
+	if err := database.DB.Where("username = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Increment version
+	user.PeopleVersion++
+	if err := database.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update version"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "People version updated",
+		"version": user.PeopleVersion,
+	})
+}
+
+// GetPeopleVersion returns the current people_version for a user
+func GetPeopleVersion(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var user models.User
+	if err := database.DB.Where("username = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"version": user.PeopleVersion,
+	})
 }
 
 // GetSingleImage returns a single image metadata with signed URLs

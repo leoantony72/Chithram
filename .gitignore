@@ -1,6 +1,10 @@
 objectData/
 .minio.sys/
 backend/chithram.db
+backend/filedata.db
+backend/eval_data/
+backend/fl_updates/
+backend/fl_models/
 # Miscellaneous
 *.class
 *.log

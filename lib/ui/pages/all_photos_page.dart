@@ -478,7 +478,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                        final thumbUrl = albumObj['cover_image_url'] as String? ?? '';
 
                        return GestureDetector(
-                          onTap: () => context.push('/albums/$albumName'),
+                          onTap: () => context.push('/albums/${Uri.encodeComponent(albumName)}'),
                           child: Container(
                              width: 120,
                              decoration: BoxDecoration(

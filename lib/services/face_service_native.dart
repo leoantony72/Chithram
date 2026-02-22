@@ -58,6 +58,13 @@ class FaceService {
     }
   }
 
+  Future<void> reset() async {
+    dispose();
+    _faceDetector = null;
+    _recognitionSession = null;
+    await initialize();
+  }
+
   void dispose() {
     _faceDetector?.close();
     _recognitionSession?.release();
@@ -263,10 +270,10 @@ class FaceService {
 
         if (w <= 0 || h <= 0) return null;
 
-        // Visual Thumbnail
+        // Visual Thumbnail (Increased size for Retina/High-DPI screens)
         img.Image thumbCrop = img.copyCrop(procImage, x: x, y: y, width: w, height: h);
-        thumbCrop = img.copyResize(thumbCrop, width: 200, height: 200);
-        final thumbnailBytes = Uint8List.fromList(img.encodeJpg(thumbCrop, quality: 80));
+        thumbCrop = img.copyResize(thumbCrop, width: 400, height: 400, interpolation: img.Interpolation.linear);
+        final thumbnailBytes = Uint8List.fromList(img.encodeJpg(thumbCrop, quality: 90));
 
         // --- Model Input Generation ---
         // Tight Crop

@@ -16,6 +16,8 @@ class FaceService {
     return null;
   }
 
+  Future<void> reset() async {}
+
   void dispose() {}
 }
 

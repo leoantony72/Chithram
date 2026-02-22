@@ -117,16 +117,27 @@ class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKee
         mode: ExtendedImageMode.gesture,
         extendedImageGestureKey: _gestureKey,
         gaplessPlayback: true,
+        onDoubleTap: (ExtendedImageGestureState state) {
+          final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
+          double targetScale = 1.0;
+          if (beginScale <= 1.001) targetScale = 3.0;
+
+          state.handleDoubleTap(
+            scale: targetScale,
+            doubleTapPosition: state.pointerDownPosition,
+          );
+        },
         initGestureConfigHandler: (state) {
           return GestureConfig(
             minScale: 0.9,
             animationMinScale: 0.7,
-            maxScale: 3.0,
-            animationMaxScale: 3.5,
+            maxScale: 10.0,
+            animationMaxScale: 12.5,
             speed: 1.0,
             inertialSpeed: 100.0,
             initialScale: 1.0,
             inPageView: true,
+            cacheGesture: true,
           );
         },
       );
@@ -140,8 +151,19 @@ class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKee
           ExtendedImage.memory(
             _thumbBytes!,
             fit: BoxFit.contain,
-            mode: ExtendedImageMode.gesture, // Allow zooming thumb too? sure
-            initGestureConfigHandler: (state) => GestureConfig(inPageView: true),
+            mode: ExtendedImageMode.gesture,
+            onDoubleTap: (ExtendedImageGestureState state) {
+               final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
+               double targetScale = 1.0;
+               if (beginScale <= 1.001) targetScale = 3.0;
+               state.handleDoubleTap(scale: targetScale, doubleTapPosition: state.pointerDownPosition);
+            },
+            initGestureConfigHandler: (state) => GestureConfig(
+              inPageView: true, 
+              minScale: 0.9, 
+              maxScale: 5.0,
+              cacheGesture: true
+            ),
           )
         else
           const Center(child: CircularProgressIndicator(color: Colors.white30)),

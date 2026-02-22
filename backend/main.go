@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"chithram/controllers"
 	"chithram/database"
@@ -25,7 +26,10 @@ func main() {
 	// Connect to database
 	database.Connect()
 	// Auto migrate
-	database.DB.AutoMigrate(&models.User{}, &models.Image{})
+	database.DB.AutoMigrate(&models.User{}, &models.Image{}, &models.ModelMetadata{}, &models.ModelMetric{})
+
+	// Seed initial model metadata if missing
+	seedModelMetadata()
 
 	// Init MinIO
 	services.InitMinio()
@@ -68,12 +72,15 @@ func main() {
 	r.GET("/images/checksums", controllers.GetChecksums)  // Add this
 	r.GET("/images/source_ids", controllers.GetSourceIDs) // Add this for fast deduplication
 	r.GET("/images/faces", controllers.GetFacesDownloadURL)
+	r.GET("/images/faces/version", controllers.GetPeopleVersion)
+	r.POST("/images/faces/register", controllers.RegisterPeopleVersion)
 	r.GET("/sync", controllers.SyncImages)
 
 	// Federated Learning Endpoints
 	services.InitFLService()
 	r.POST("/fl/update", controllers.UploadLocalUpdate)
 	r.GET("/fl/global", controllers.GetGlobalModel)
+	r.GET("/dashboard", controllers.GetDashboard)
 
 	// Ensure models directory exists
 	modelsDir := "./models"
@@ -84,18 +91,29 @@ func main() {
 	// Model Info Endpoint
 	r.GET("/models/:name/info", func(c *gin.Context) {
 		modelName := c.Param("name")
-		modelPath := filepath.Join(modelsDir, modelName+".onnx")
 
-		info, err := os.Stat(modelPath)
-		if os.IsNotExist(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Model not found"})
+		var meta models.ModelMetadata
+		if err := database.DB.Where("name = ?", modelName).First(&meta).Error; err != nil {
+			// Fallback to file system if database entry is missing
+			modelPath := filepath.Join(modelsDir, modelName+".onnx")
+			info, err := os.Stat(modelPath)
+			if os.IsNotExist(err) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Model not found"})
+				return
+			}
+
+			c.JSON(http.StatusOK, ModelInfo{
+				Name:    modelName,
+				Version: info.ModTime().Format("20060102150405"),
+				Size:    info.Size(),
+			})
 			return
 		}
 
 		c.JSON(http.StatusOK, ModelInfo{
-			Name:    modelName,
-			Version: info.ModTime().String(), // Simple versioning for now
-			Size:    info.Size(),
+			Name:    meta.Name,
+			Version: meta.Version,
+			Size:    meta.Size,
 		})
 	})
 
@@ -133,5 +151,28 @@ func main() {
 	fmt.Printf("Server starting on port %s\n", port)
 	if err := r.Run(":" + port); err != nil {
 		fmt.Printf("Error starting server: %v\n", err)
+	}
+}
+
+func seedModelMetadata() {
+	modelsDir := "./models"
+	files, _ := os.ReadDir(modelsDir)
+	for _, f := range files {
+		if !f.IsDir() && filepath.Ext(f.Name()) == ".onnx" {
+			name := f.Name()[:len(f.Name())-5]
+			info, _ := f.Info()
+
+			var meta models.ModelMetadata
+			if database.DB.Where("name = ?", name).First(&meta).Error != nil {
+				// Seed new
+				meta = models.ModelMetadata{
+					Name:      name,
+					Version:   info.ModTime().Format("20060102150405"),
+					Size:      info.Size(),
+					UpdatedAt: time.Now(),
+				}
+				database.DB.Create(&meta)
+			}
+		}
 	}
 }

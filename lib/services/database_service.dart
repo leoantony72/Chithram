@@ -45,7 +45,8 @@ class DatabaseService {
             landmarks TEXT,
             embedding BLOB,
             thumbnail BLOB,
-            cluster_id INTEGER
+            cluster_id INTEGER,
+            fl_trained INTEGER DEFAULT 0
           )
         ''');
 
@@ -55,6 +56,7 @@ class DatabaseService {
             name TEXT,
             representative_face_id INTEGER,
             embedding BLOB, -- Centroid embedding
+            thumbnail BLOB, -- Cached representative thumbnail
             FOREIGN KEY (representative_face_id) REFERENCES faces (id)
           )
         ''');
@@ -93,8 +95,18 @@ class DatabaseService {
                await db.execute('CREATE TABLE backup_log (file_path TEXT PRIMARY KEY, status TEXT, timestamp INTEGER)');
             } catch (_) {}
          }
+          if (oldVersion < 7) {
+            try {
+               await db.execute('ALTER TABLE clusters ADD COLUMN thumbnail BLOB');
+            } catch (_) {}
+          }
+          if (oldVersion < 8) {
+            try {
+               await db.execute('ALTER TABLE faces ADD COLUMN fl_trained INTEGER DEFAULT 0');
+            } catch (_) {}
+          }
       },
-      version: 6, 
+      version: 8,
     );
   }
 
@@ -200,6 +212,22 @@ class DatabaseService {
     return await db.query('faces');
   }
 
+  Future<List<Map<String, dynamic>>> getUntrainedFaces({int limit = 40}) async {
+    final db = await database;
+    return await db.query(
+      'faces',
+      where: 'fl_trained = 0',
+      limit: limit,
+      orderBy: 'id ASC',
+    );
+  }
+
+  Future<int> getTotalUntrainedCount() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT COUNT(*) as count FROM faces WHERE fl_trained = 0');
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
   Future<void> updateFaceCluster(int faceId, int clusterId) async {
     final db = await database;
     await db.update(
@@ -260,12 +288,13 @@ class DatabaseService {
   /// Initial implementation to fetch cluster + representative face details
   Future<List<Map<String, dynamic>>> getAllClustersWithThumbnail() async {
     final db = await database;
-    // Join clusters with faces to get thumbnail info
+    // Return cluster data, prioritizing its own thumbnail column, falling back to joined face thumbnail
     return await db.rawQuery('''
       SELECT 
         c.id, 
         c.name, 
-        f.thumbnail
+        COALESCE(c.thumbnail, f.thumbnail) as thumbnail,
+        c.representative_face_id
       FROM clusters c
       LEFT JOIN faces f ON c.representative_face_id = f.id
     ''');

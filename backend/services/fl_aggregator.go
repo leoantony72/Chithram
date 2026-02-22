@@ -1,14 +1,19 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"chithram/database"
+	"chithram/models"
 )
 
 var (
@@ -57,6 +62,7 @@ func InitFLService() {
 			}
 		}
 	}
+
 	if latestFile != "" {
 		CurrentGlobalModelPath = filepath.Join(AggregatedModelsDir, latestFile)
 		log.Printf("Found existing global model: %s", latestFile)
@@ -64,6 +70,71 @@ func InitFLService() {
 		// Default to the main model if no fl_models exist yet
 		CurrentGlobalModelPath = "./models/face-detection.onnx"
 	}
+
+	// PROACTIVE: Evaluate key models on startup and print to console
+	go func() {
+		pythonExe := "python"
+		if _, err := os.Stat("../.venv/Scripts/python.exe"); err == nil {
+			pythonExe, _ = filepath.Abs("../.venv/Scripts/python.exe")
+		}
+
+		evalModel := func(modelPath string, label string) {
+			if _, err := os.Stat(modelPath); err != nil {
+				log.Printf("SKIP: Model %s not found", modelPath)
+				return
+			}
+			log.Printf("--- EVALUATING %s (%s) ---", label, modelPath)
+			evalCmd := exec.Command(pythonExe, "./scripts/evaluate_model.py", "--model", modelPath)
+			evalOutput, err := evalCmd.CombinedOutput()
+			if err != nil {
+				log.Printf("ERROR: Evaluation failed: %v\nOutput: %s", err, string(evalOutput))
+				return
+			}
+
+			fmt.Printf("\n>>> EVALUATION RESULT [%s] <<<\n%s\n", label, string(evalOutput))
+
+			type EvalResult struct {
+				Accuracy float64 `json:"accuracy"`
+				Loss     float64 `json:"loss"`
+			}
+			var res EvalResult
+			rawStr := string(evalOutput)
+			startIndex := strings.Index(rawStr, "{")
+			if startIndex != -1 {
+				jsonPart := rawStr[startIndex:]
+				if err := json.Unmarshal([]byte(jsonPart), &res); err == nil {
+					metric := models.ModelMetric{
+						ModelName: "face-detection",
+						Version:   label,
+						Accuracy:  res.Accuracy,
+						Loss:      res.Loss,
+						CreatedAt: time.Now(),
+					}
+					database.DB.Create(&metric)
+				}
+			}
+		}
+
+		// 1. Evaluate the Original Baseline
+		evalModel("./models/yolov8n.onnx", "original_baseline")
+
+		// 2. Evaluate the Current Live Model
+		evalModel("./models/face-detection.onnx", "current_live")
+
+		// 3. Backfill history if empty (keeping original logic for other models)
+		var count int64
+		database.DB.Model(&models.ModelMetric{}).Count(&count)
+		if count <= 2 { // Only original and current exist
+			log.Println("Dashboard history is empty. Attempting to backfill from fl_models...")
+			files, _ := ioutil.ReadDir(AggregatedModelsDir)
+			for _, f := range files {
+				if !f.IsDir() && filepath.Ext(f.Name()) == ".onnx" {
+					evalModel(filepath.Join(AggregatedModelsDir, f.Name()), f.Name())
+				}
+			}
+		}
+		log.Println("Startup Evaluation and Backfill complete.")
+	}()
 }
 
 // AggregateModels checks the pending updates folder and runs the aggregation script if enough updates are present
@@ -98,8 +169,15 @@ func AggregateModels() {
 
 	// Call Python script to perform weighted averaging (FedAvg)
 	// We'll pass the list of models as arguments along with the output path
-	// Adjust python path if needed (e.g., "python3" on linux, "python" on windows)
-	cmd := exec.Command("python", "./scripts/aggregate_models.py", "--output", outputPath)
+	// Use the project's virtual environment if available, otherwise fallback to system python
+	pythonExe := "python"
+	if _, err := os.Stat("../.venv/Scripts/python.exe"); err == nil {
+		pythonExe, _ = filepath.Abs("../.venv/Scripts/python.exe")
+	} else if _, err := os.Stat("../.venv/bin/python"); err == nil {
+		pythonExe, _ = filepath.Abs("../.venv/bin/python")
+	}
+
+	cmd := exec.Command(pythonExe, "./scripts/aggregate_models.py", "--output", outputPath)
 	cmd.Args = append(cmd.Args, modelFiles...)
 
 	// Capture output for debugging
@@ -112,12 +190,57 @@ func AggregateModels() {
 	log.Printf("Aggregation successful! New global model: %s", newGlobalModelName)
 	CurrentGlobalModelPath = outputPath
 
+	// --- EVALUATION PASS ---
+	// Evaluate Old vs New Model Accuracy
+	oldModelPath := "./models/face-detection.onnx"
+
+	evalModel := func(modelPath string, versionName string) {
+		log.Printf("Evaluating model: %s", modelPath)
+		evalCmd := exec.Command(pythonExe, "./scripts/evaluate_model.py", "--model", modelPath)
+		evalOutput, evalErr := evalCmd.CombinedOutput()
+		if evalErr == nil {
+			type EvalResult struct {
+				Accuracy float64 `json:"accuracy"`
+				Loss     float64 `json:"loss"`
+			}
+			var res EvalResult
+			rawStr := string(evalOutput)
+			startIndex := strings.Index(rawStr, "{")
+			if startIndex != -1 {
+				jsonPart := rawStr[startIndex:]
+				if err := json.Unmarshal([]byte(jsonPart), &res); err == nil {
+					metric := models.ModelMetric{
+						ModelName: "face-detection",
+						Version:   versionName,
+						Accuracy:  res.Accuracy,
+						Loss:      res.Loss,
+						CreatedAt: time.Now(),
+					}
+					database.DB.Create(&metric)
+					log.Printf("Stored metrics for %s: Acc=%.4f, Loss=%.4f", versionName, res.Accuracy, res.Loss)
+				} else {
+					log.Printf("Failed to unmarshal JSON from eval output: %v\nRaw: %s", err, rawStr)
+				}
+			} else {
+				log.Printf("No JSON found in eval output: %s", rawStr)
+			}
+		} else {
+			log.Printf("Failed to evaluate model %s: %v\nOutput: %s", modelPath, evalErr, string(evalOutput))
+		}
+	}
+
+	// Evaluate Old (if exists)
+	if _, err := os.Stat(oldModelPath); err == nil {
+		evalModel(oldModelPath, "previous")
+	}
+	// Evaluate New
+	evalModel(outputPath, newGlobalModelName)
+
 	// Step: Rotate face-detection.onnx in backend/models
-	targetModelPath := "./models/face-detection.onnx"
-	if _, err := os.Stat(targetModelPath); err == nil {
+	if _, err := os.Stat(oldModelPath); err == nil {
 		oldModelName := fmt.Sprintf("face-detection_old_%d.onnx", time.Now().Unix())
-		oldModelPath := filepath.Join("./models", oldModelName)
-		if err := os.Rename(targetModelPath, oldModelPath); err != nil {
+		archivePath := filepath.Join("./models", oldModelName)
+		if err := os.Rename(oldModelPath, archivePath); err != nil {
 			log.Printf("Failed to rename old face-detection.onnx: %v", err)
 		} else {
 			log.Printf("Renamed old model to %s", oldModelName)
@@ -127,11 +250,21 @@ func AggregateModels() {
 	// Step: Move/Copy the new aggregated model to backend/models/face-detection.onnx
 	inputData, err := ioutil.ReadFile(outputPath)
 	if err == nil {
-		if err := ioutil.WriteFile(targetModelPath, inputData, 0644); err != nil {
+		if err := ioutil.WriteFile(oldModelPath, inputData, 0644); err != nil {
 			log.Printf("Failed to write new face-detection.onnx: %v", err)
 		} else {
 			log.Printf("Successfully replaced backend/models/face-detection.onnx")
-			// Optional: you can choose to delete outputPath now if you strictly only want it in models/
+
+			// Update Database Metadata
+			var meta models.ModelMetadata
+			dbName := "face-detection"
+			if err := database.DB.Where("name = ?", dbName).First(&meta).Error; err == nil {
+				meta.Version = time.Now().Format("20060102150405")
+				meta.Size = int64(len(inputData))
+				meta.UpdatedAt = time.Now()
+				database.DB.Save(&meta)
+				log.Printf("Updated database metadata for %s to version %s", dbName, meta.Version)
+			}
 		}
 	} else {
 		log.Printf("Failed to read the newly aggregated model for copying: %v", err)
