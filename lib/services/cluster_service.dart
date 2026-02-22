@@ -12,10 +12,10 @@ class ClusterService {
   // Since we normalize vectors (L2), range is 0.0 to 2.0.
   // 0.0 = Identical.
   // 1.0 = Orthogonal.
-  // 0.7 - 0.8 is usually a high confidence match.
-  // 0.9 - 1.0 is a loose match.
-  // Since DBSCAN chains matches (transitive), we should use a stricter threshold than incremental.
-  static const double _eps = 0.95; 
+  // 0.7 - 0.8 is usually a high confidence match (Cosine Similarity ~ 0.7)
+  // 1.0 - 1.2 is the standard MobileFaceNet threshold boundary (Cosine Sim ~ 0.3 - 0.5)
+  // For highly scattered lighting and clothing changes, 1.15 drastically merges identities.
+  static const double _eps = 1.15; 
   static const int _minPoints = 1; // Even a single face is a person
 
   Future<void> runClustering() async {

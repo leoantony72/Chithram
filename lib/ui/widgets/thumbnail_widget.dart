@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
+import '../../providers/selection_provider.dart';
 import '../../services/thumbnail_cache.dart';
 import '../../models/gallery_item.dart';
 
@@ -28,6 +30,7 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   bool _showImage = true;
   Timer? _timer;
   bool _isLoading = false;
+  bool _isHovering = false;
 
   @override
   void initState() {
@@ -123,47 +126,94 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final item = GalleryItem.local(widget.entity);
+
     return RepaintBoundary(
-      child: GestureDetector(
-        onTap: () => context.push('/viewer', extra: GalleryItem.local(widget.entity)),
-        child: Container(
-          color: Colors.grey[900],
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (_showImage && _bytes != null)
-                Image.memory(
-                  _bytes!,
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                )
-              else
-                 // Placeholder
-                 Container(
-                   color: Colors.grey[900],
-                 ),
-              
-              if (widget.entity.type == AssetType.video)
-                Positioned(
-                  top: 4,
-                  right: 4,
+      child: Consumer<SelectionProvider>(
+        builder: (context, selection, child) {
+          final isSelected = selection.isSelected(item);
+          final isSelectionMode = selection.isSelectionMode;
+
+          return MouseRegion(
+            onEnter: (_) => setState(() => _isHovering = true),
+            onExit: (_) => setState(() => _isHovering = false),
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () {
+                if (isSelectionMode) {
+                  selection.toggleSelection(item);
+                } else {
+                  context.push('/viewer', extra: item);
+                }
+              },
+              onLongPress: () {
+                selection.toggleSelection(item);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 100),
+                padding: isSelected ? const EdgeInsets.all(8.0) : EdgeInsets.zero,
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.grey[800] : Colors.transparent,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(isSelected ? 4 : 6),
                   child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.5),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white24, width: 1),
-                    ),
-                    child: const Icon(
-                      Icons.play_arrow_rounded,
-                      color: Colors.white,
-                      size: 14,
+                    color: Colors.grey[900],
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (_showImage && _bytes != null)
+                          Image.memory(
+                            _bytes!,
+                            fit: BoxFit.cover,
+                            gaplessPlayback: true,
+                          )
+                        else
+                          Container(color: Colors.grey[900]),
+              
+                        if (widget.entity.type == AssetType.video)
+                          Positioned(
+                            top: 4,
+                            right: 4,
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.5),
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white24, width: 1),
+                              ),
+                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 14),
+                            ),
+                          ),
+                        if (_isHovering || isSelected)
+                          Positioned(
+                            top: 6,
+                            left: 6,
+                            child: GestureDetector(
+                              onTap: () => selection.toggleSelection(item),
+                              child: Container(
+                                width: 22,
+                                height: 22,
+                                decoration: BoxDecoration(
+                                  color: isSelected ? Colors.blue : Colors.white.withOpacity(0.5),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: Colors.white, width: 1.5),
+                                ),
+                                child: isSelected
+                                    ? const Icon(Icons.check, color: Colors.white, size: 14)
+                                    : null,
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                 ),
-            ],
-          ),
-        ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

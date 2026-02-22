@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:provider/provider.dart';
 import 'providers/photo_provider.dart';
+import 'providers/selection_provider.dart';
 import 'ui/scaffold_with_navbar.dart';
 import 'ui/pages/all_photos_page.dart';
 import 'ui/pages/people_page.dart';
@@ -11,6 +12,7 @@ import 'ui/pages/albums_page.dart';
 import 'ui/pages/asset_viewer_page.dart';
 import 'ui/pages/person_details_page.dart';
 import 'ui/pages/album_details_page.dart';
+import 'ui/pages/cloud_album_details_page.dart';
 import 'ui/pages/map_page.dart';
 import 'ui/pages/settings_page.dart';
 import 'screens/auth_screen.dart';
@@ -26,6 +28,7 @@ void main() {
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => PhotoProvider()),
+        ChangeNotifierProvider(create: (_) => SelectionProvider()),
       ],
       child: const NintaApp(),
     ),
@@ -102,6 +105,13 @@ final GoRouter _router = GoRouter(
       builder: (context, state) {
         final AssetPathEntity album = state.extra as AssetPathEntity;
         return AlbumDetailsPage(album: album);
+      },
+    ),
+    GoRoute(
+      path: '/albums/:albumName',
+      builder: (context, state) {
+        final albumName = state.pathParameters['albumName']!;
+        return CloudAlbumDetailsPage(albumName: albumName);
       },
     ),
     GoRoute(

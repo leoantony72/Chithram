@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:intl/intl.dart';
@@ -141,12 +142,20 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
                             title: _formatDate(group.date),
                           ),
                         ),
-                        SliverGrid(
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3, 
-                            crossAxisSpacing: 2,
-                            mainAxisSpacing: 2,
-                          ),
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                          sliver: SliverGrid(
+                            gridDelegate: kIsWeb
+                                ? const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 6,
+                                    crossAxisSpacing: 4,
+                                    mainAxisSpacing: 4,
+                                  )
+                                : const SliverGridDelegateWithMaxCrossAxisExtent(
+                                    maxCrossAxisExtent: 220,
+                                    crossAxisSpacing: 4,
+                                    mainAxisSpacing: 4,
+                                  ),
                           delegate: SliverChildBuilderDelegate(
                             (context, index) {
                               final GalleryItem item = group.items[index];
@@ -163,7 +172,8 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
                             childCount: group.items.length,
                           ),
                         ),
-                      ]
+                      ),
+                    ]
                     ],
                   ),
                 ),

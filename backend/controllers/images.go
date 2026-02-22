@@ -20,6 +20,11 @@ type ImageResponse struct {
 	Thumb64URL  string `json:"thumb_64_url"`
 }
 
+type AlbumResponse struct {
+	Name       string `json:"name"`
+	CoverImage string `json:"cover_image_url"`
+}
+
 // RegisterImage registers an image's metadata after it has been uploaded to MinIO
 func RegisterImage(c *gin.Context) {
 	fmt.Println("RegisterImage: Received request")
@@ -61,20 +66,25 @@ func ListImages(c *gin.Context) {
 	}
 
 	limit := 50
-	// Parse limit if necessary
 
-	var images []models.Image
-	query := database.DB.Where("user_id = ? AND is_deleted = ?", userID, false).
-		Order("modified_at DESC, image_id DESC").
-		Limit(limit)
-
+	page := 0
 	cursor := c.Query("cursor")
 	if cursor != "" {
-		// Simple cursor implementation: query for modified_at < cursor (since DESC)
-		// For robust cursor, we need (modified_at, image_id) tuple comparison
-		// For now, let's just use modified_at
-		query = query.Where("modified_at < ?", cursor)
+		// Interpret cursor as page number for robust pagination instead of buggy time strings
+		fmt.Sscanf(cursor, "%d", &page)
 	}
+
+	var images []models.Image
+	query := database.DB.Where("user_id = ? AND is_deleted = ?", userID, false)
+
+	albumFilter := c.Query("album")
+	if albumFilter != "" {
+		query = query.Where("album = ?", albumFilter)
+	}
+
+	query = query.Order("modified_at DESC, image_id DESC").
+		Limit(limit).
+		Offset(page * limit)
 
 	if err := query.Find(&images).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
@@ -100,8 +110,8 @@ func ListImages(c *gin.Context) {
 	}
 
 	nextCursor := ""
-	if len(images) > 0 {
-		nextCursor = images[len(images)-1].ModifiedAt.Format(time.RFC3339Nano)
+	if len(images) == limit {
+		nextCursor = fmt.Sprintf("%d", page+1)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -181,6 +191,8 @@ func GenerateUploadURLs(c *gin.Context) {
 		var objectName string
 		if variant == "original" {
 			objectName = fmt.Sprintf("%s/images/originals/%s.enc", input.UserID, input.ImageID)
+		} else if variant == "faces" {
+			objectName = fmt.Sprintf("%s/metadata/faces.enc", input.UserID)
 		} else {
 			objectName = fmt.Sprintf("%s/images/thumbnails/%s_%s.enc", input.UserID, input.ImageID, variant)
 		}
@@ -233,4 +245,102 @@ func GetSourceIDs(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"source_ids": sourceIDs})
+}
+
+// GetFacesDownloadURL generates a presigned GET URL to download the user's master encrypted faces blob
+func GetFacesDownloadURL(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	objectName := fmt.Sprintf("%s/metadata/faces.enc", userID)
+	url, err := services.GetPresignedURL(objectName, 15*time.Minute)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate download URL"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"url": url})
+}
+
+// GetSingleImage returns a single image metadata with signed URLs
+func GetSingleImage(c *gin.Context) {
+	imageID := c.Param("id")
+	userID := c.Query("user_id")
+
+	if userID == "" || imageID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id and image_id required"})
+		return
+	}
+
+	var img models.Image
+	if err := database.DB.Where("user_id = ? AND image_id = ? AND is_deleted = ?", userID, imageID, false).First(&img).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Image not found"})
+		return
+	}
+
+	resp := ImageResponse{Image: img}
+	expiry := 15 * time.Minute
+
+	originalPath := fmt.Sprintf("%s/images/originals/%s.enc", img.UserID, img.ImageID)
+	thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", img.UserID, img.ImageID)
+	thumb64Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_64.enc", img.UserID, img.ImageID)
+
+	resp.OriginalURL, _ = services.GetPresignedURL(originalPath, expiry)
+	resp.Thumb256URL, _ = services.GetPresignedURL(thumb256Path, expiry)
+	resp.Thumb64URL, _ = services.GetPresignedURL(thumb64Path, expiry)
+
+	c.JSON(http.StatusOK, gin.H{"image": resp})
+}
+
+// GetAlbums returns a list of distinct albums created by the user
+func GetAlbums(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var results []struct {
+		Album   string
+		ImageID string
+	}
+
+	// Fetch distinct albums and their most recent image_id
+	query := `
+		SELECT album, image_id
+		FROM images i1
+		WHERE user_id = ? AND is_deleted = 0 AND album != ''
+		AND created_at = (
+			SELECT MAX(created_at)
+			FROM images i2
+			WHERE i2.album = i1.album AND i2.user_id = i1.user_id AND i2.is_deleted = 0
+		)
+		GROUP BY album
+	`
+	if err := database.DB.Raw(query, userID).Scan(&results).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch albums"})
+		return
+	}
+
+	var albumsResp []AlbumResponse
+	expiry := 15 * time.Minute
+
+	for _, res := range results {
+		thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", userID, res.ImageID)
+		thumb256URL, _ := services.GetPresignedURL(thumb256Path, expiry)
+
+		albumsResp = append(albumsResp, AlbumResponse{
+			Name:       res.Album,
+			CoverImage: thumb256URL,
+		})
+	}
+
+	if albumsResp == nil {
+		albumsResp = []AlbumResponse{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"albums": albumsResp})
 }

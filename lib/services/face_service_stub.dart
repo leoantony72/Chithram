@@ -8,7 +8,7 @@ class FaceService {
     print('FaceService: Web stub initialized.');
   }
 
-  Future<List<dynamic>> detectFaces(File imageFile) async {
+  Future<List<LocalFace>> detectFaces(File imageFile) async {
     return [];
   }
 
@@ -23,4 +23,11 @@ class FaceData {
   final List<double> embedding;
   final Uint8List thumbnail;
   FaceData(this.embedding, this.thumbnail);
+}
+
+class LocalFace {
+  final Rect boundingBox;
+  final Point<int>? leftEye;
+  final Point<int>? rightEye;
+  LocalFace(this.boundingBox, this.leftEye, this.rightEye);
 }

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
@@ -21,14 +22,16 @@ class FaceService {
   Future<void> initialize() async {
     if (_faceDetector != null) return; // Already initialized
 
-    // 1. Initialize Google ML Kit Face Detector
-    _faceDetector = FaceDetector(
-      options: FaceDetectorOptions(
-        enableContours: true,
-        enableLandmarks: true,
-        performanceMode: FaceDetectorMode.accurate,
-      ),
-    );
+    // 1. Initialize Google ML Kit Face Detector (Mobile Only)
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      _faceDetector = FaceDetector(
+        options: FaceDetectorOptions(
+          enableContours: true,
+          enableLandmarks: true,
+          performanceMode: FaceDetectorMode.accurate,
+        ),
+      );
+    }
 
     // 2. Initialize ONNX Runtime for Recognition
     OrtEnv.instance.init();
@@ -39,8 +42,14 @@ class FaceService {
     if (recModelPath != null) {
       try {
         final sessionOptions = OrtSessionOptions();
-        _recognitionSession = OrtSession.fromFile(File(recModelPath), sessionOptions);
-        print('FaceService: Recognition model loaded.');
+        
+        // Workaround for Windows ONNX Runtime FFI char* vs wchar_t* string decoding bug
+        // which completely corrupts file paths like "C:\Users\...".
+        // Instead of passing the string path, we load the raw bytes directly in Dart memory!
+        final modelBytes = await File(recModelPath).readAsBytes();
+        _recognitionSession = OrtSession.fromBuffer(modelBytes, sessionOptions);
+        
+        print('FaceService: Recognition model loaded successfully from buffer.');
       } catch (e) {
         print('FaceService: Error loading recognition model: $e');
       }
@@ -57,13 +66,60 @@ class FaceService {
 
   // --- Detection (ML Kit) ---
 
-  Future<List<Face>> detectFaces(File imageFile) async {
-    if (_faceDetector == null) return [];
-    
+  Future<List<LocalFace>> detectFaces(File imageFile) async {
     try {
-      final inputImage = InputImage.fromFile(imageFile);
-      final faces = await _faceDetector!.processImage(inputImage);
-      return faces;
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
+        // Run Desktop Fallback Python Detector via virtual environment
+        final String pythonCmd = !kIsWeb && Platform.isWindows ? '.venv\\Scripts\\python.exe' : 'python';
+        final detModelPath = await _modelService.getModelPath(ModelService.faceDetectionModelName);
+        
+        final result = await Process.run(pythonCmd, [
+          'scripts/desktop_detect.py',
+          imageFile.path,
+          detModelPath ?? '',
+        ]);
+        
+        if (result.exitCode != 0) {
+           print("Desktop Face Detect Error: ${result.stderr}");
+           return [];
+        }
+        
+        final String out = result.stdout.toString().trim();
+        if (out.isEmpty) return [];
+        
+        final List<dynamic> jsonList = jsonDecode(out);
+        final List<LocalFace> faces = [];
+        
+        for (var item in jsonList) {
+           final box = item['box'];
+           final le = item['left_eye'];
+           final re = item['right_eye'];
+           
+           faces.add(LocalFace(
+              Rect.fromLTWH(box[0].toDouble(), box[1].toDouble(), box[2].toDouble(), box[3].toDouble()),
+              Point<int>(le[0], le[1]),
+              Point<int>(re[0], re[1]),
+           ));
+        }
+        
+        return faces;
+      } else {
+        // Run Native Android/iOS MLKit Detector
+        if (_faceDetector == null) return [];
+        final inputImage = InputImage.fromFile(imageFile);
+        final mlFaces = await _faceDetector!.processImage(inputImage);
+        
+        return mlFaces.map((f) {
+           final le = f.landmarks[FaceLandmarkType.leftEye];
+           final re = f.landmarks[FaceLandmarkType.rightEye];
+           
+           return LocalFace(
+             f.boundingBox,
+             le != null ? Point<int>(le.position.x, le.position.y) : null,
+             re != null ? Point<int>(re.position.x, re.position.y) : null,
+           );
+        }).toList();
+      }
     } catch (e) {
       print('FaceService: Error detecting faces: $e');
       return [];
@@ -260,6 +316,13 @@ class FaceData {
   final List<double> embedding;
   final Uint8List thumbnail;
   FaceData(this.embedding, this.thumbnail);
+}
+
+class LocalFace {
+  final Rect boundingBox;
+  final Point<int>? leftEye;
+  final Point<int>? rightEye;
+  LocalFace(this.boundingBox, this.leftEye, this.rightEye);
 }
 
 class _CropRequest {

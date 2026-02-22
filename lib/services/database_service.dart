@@ -1,6 +1,10 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:path/path.dart';
+import 'package:flutter/foundation.dart';
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
@@ -16,8 +20,18 @@ class DatabaseService {
   }
 
   Future<Database> _initDatabase() async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'chithram_faces.db');
+    String path = 'chithram_faces.db';
+    if (kIsWeb) {
+      databaseFactory = databaseFactoryFfiWeb;
+    } else if (Platform.isWindows || Platform.isLinux) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+      final dbPath = await getDatabasesPath();
+      path = join(dbPath, 'chithram_faces.db');
+    } else {
+      final dbPath = await getDatabasesPath();
+      path = join(dbPath, 'chithram_faces.db');
+    }
 
     return await openDatabase(
       path,

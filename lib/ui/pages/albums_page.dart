@@ -5,6 +5,26 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:go_router/go_router.dart';
 import '../../providers/photo_provider.dart';
 import '../../services/thumbnail_cache.dart';
+import '../../services/backup_service.dart';
+import '../../services/auth_service.dart';
+import '../../services/crypto_service.dart';
+import 'package:sodium_libs/sodium_libs_sumo.dart';
+
+class AlbumModel {
+  final String id;
+  final String name;
+  final AssetPathEntity? localPath;
+  final String? remoteCoverUrl;
+  final bool isCloud;
+
+  AlbumModel({
+    required this.id,
+    required this.name,
+    this.localPath,
+    this.remoteCoverUrl,
+    this.isCloud = false,
+  });
+}
 
 class AlbumsPage extends StatelessWidget {
   const AlbumsPage({super.key});
@@ -32,14 +52,41 @@ class AlbumsPage extends StatelessWidget {
       ),
       body: Consumer<PhotoProvider>(
         builder: (context, provider, child) {
-          if (provider.isLoading && provider.paths.isEmpty) {
+          if (provider.isLoading && provider.paths.isEmpty && provider.remoteAlbums.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
           
+          // Unified list building
+          final List<AlbumModel> allAlbums = [];
+          
+          // Add local albums
+          for (var path in provider.paths) {
+            final isUploaded = provider.remoteAlbums.any((ra) => ra['name'] == path.name);
+            allAlbums.add(AlbumModel(
+              id: path.id,
+              name: path.name,
+              localPath: path,
+              isCloud: isUploaded,
+            ));
+          }
+          
+          // Add purely remote albums
+          for (var ra in provider.remoteAlbums) {
+            final name = ra['name'] ?? 'Unknown';
+            if (!allAlbums.any((a) => a.name == name)) {
+               allAlbums.add(AlbumModel(
+                 id: 'remote_$name',
+                 name: name,
+                 remoteCoverUrl: ra['cover_image_url'],
+                 isCloud: true,
+               ));
+            }
+          }
+
           return CustomScrollView(
             physics: const BouncingScrollPhysics(),
             slivers: [
-              // Locations Section
+              // Locations Section (unchanged block)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.only(top: 100, bottom: 20),
@@ -102,7 +149,7 @@ class AlbumsPage extends StatelessWidget {
                       ),
                       const Spacer(),
                       Text(
-                        '${provider.paths.length} Albums',
+                        '${allAlbums.length} Albums',
                         style: TextStyle(color: Colors.grey[500], fontSize: 13),
                       ),
                     ],
@@ -112,20 +159,20 @@ class AlbumsPage extends StatelessWidget {
 
               // Albums Grid
               SliverPadding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
                 sliver: SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 16,
-                    crossAxisSpacing: 16,
+                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 220,
+                    mainAxisSpacing: 4,
+                    crossAxisSpacing: 4,
                     childAspectRatio: 0.85,
                   ),
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
-                      final path = provider.paths[index];
-                      return AlbumCard(album: path);
+                      final album = allAlbums[index];
+                      return AlbumCard(album: album);
                     },
-                    childCount: provider.paths.length,
+                    childCount: allAlbums.length,
                   ),
                 ),
               ),
@@ -147,7 +194,7 @@ class AlbumMetadataCache {
 }
 
 class AlbumCard extends StatefulWidget {
-  final AssetPathEntity album;
+  final AlbumModel album;
 
   const AlbumCard({super.key, required this.album});
 
@@ -197,10 +244,17 @@ class _AlbumCardState extends State<AlbumCard> {
 
   Future<void> _fetchData() async {
     final String albumId = widget.album.id;
+    if (widget.album.localPath == null) {
+       // Cloud only album
+       if (widget.album.remoteCoverUrl != null) {
+          _fetchRemoteThumbnail();
+       }
+       return;
+    }
     
     // Parallel fetch for speed
-    final countFuture = widget.album.assetCountAsync;
-    final listFuture = widget.album.getAssetListRange(start: 0, end: 1);
+    final countFuture = widget.album.localPath!.assetCountAsync;
+    final listFuture = widget.album.localPath!.getAssetListRange(start: 0, end: 1);
 
     final results = await Future.wait([countFuture, listFuture]);
     final int newCount = results[0] as int;
@@ -249,11 +303,31 @@ class _AlbumCardState extends State<AlbumCard> {
     }
   }
 
+  Future<void> _fetchRemoteThumbnail() async {
+     try {
+       final auth = AuthService();
+       final session = await auth.loadSession();
+       if (session == null) return;
+       final masterKey = SecureKey.fromList(CryptoService().sodium, session['masterKey']);
+       
+       final bytes = await BackupService().fetchAndDecryptFromUrl(widget.album.remoteCoverUrl!, masterKey);
+       if (mounted && bytes != null) {
+         setState(() => _thumbBytes = bytes);
+       }
+     } catch (e) {
+       debugPrint("Error fetching remote album cover: $e");
+     }
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: () {
-        context.push('/album_details', extra: widget.album);
+        if (widget.album.localPath != null) {
+          context.push('/album_details', extra: widget.album.localPath);
+        } else {
+          context.push('/cloud_album_details', extra: {'name': widget.album.name});
+        }
       },
       child: Container(
         decoration: BoxDecoration(
@@ -277,7 +351,26 @@ class _AlbumCardState extends State<AlbumCard> {
             else
               Container(
                 color: Colors.grey[800],
-                child: const Center(child: Icon(Icons.folder, color: Colors.white24, size: 48)),
+                child: Center(
+                  child: widget.album.localPath == null
+                      ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.folder, color: Colors.white24, size: 48),
+                ),
+              ),
+            
+            // Cloud Icon Indicator
+            if (widget.album.isCloud)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.black45,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.cloud_done, color: Colors.white, size: 14),
+                ),
               ),
             
             // Gradient Overlay

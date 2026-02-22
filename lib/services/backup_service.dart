@@ -7,6 +7,8 @@ import 'package:path/path.dart' as path;
 import 'package:photo_manager/photo_manager.dart';
 import 'package:sodium_libs/sodium_libs_sumo.dart';
 import 'package:crypto/crypto.dart'; // Add crypto package
+import 'package:image/image.dart' as img; // Handle thumbnails directly
+import 'package:file_picker/file_picker.dart'; // Handle manual file picking
 import '../models/remote_image.dart';
 import 'database_service.dart';
 import 'auth_service.dart';
@@ -29,11 +31,17 @@ class BackupService {
   
   // URL Helper
   String get _baseUrl {
-     if (kIsWeb) return 'http://localhost:8080';
-     if (Platform.isAndroid) {
-       return 'http://192.168.18.11:8080';
-     }
-     return 'http://localhost:8080';
+    if (kIsWeb) {
+      final host = Uri.base.host;
+      if (host.isNotEmpty && host != 'localhost' && host != '127.0.0.1') {
+        return 'http://$host:8080';
+      }
+      return 'http://localhost:8080';
+    }
+    if (!kIsWeb && Platform.isAndroid) {
+      return 'http://192.168.18.11:8080';
+    }
+    return 'http://localhost:8080';
   }
 
   // Initialize settings
@@ -296,9 +304,12 @@ class BackupService {
       Uri uri = Uri.parse(url);
       final String originalAuthority = uri.authority; // e.g., 127.0.0.1:9000
       
-      // Fix for Android Emulator/Device: Replace localhost with host IP
-      if (Platform.isAndroid && (uri.host == '127.0.0.1' || uri.host == 'localhost')) {
-         // Use the same IP as _baseUrl
+      if (kIsWeb) {
+        final host = Uri.base.host;
+        if (host.isNotEmpty && host != 'localhost' && host != '127.0.0.1' && (uri.host == '127.0.0.1' || uri.host == 'localhost')) {
+          uri = uri.replace(host: host);
+        }
+      } else if (!kIsWeb && Platform.isAndroid && (uri.host == '127.0.0.1' || uri.host == 'localhost')) {
          uri = uri.replace(host: '192.168.18.11'); 
       }
 
@@ -343,6 +354,7 @@ class BackupService {
     required String checksum,
     required int width,
     required int height,
+    String? albumName,
   }) async {
     try {
       final uri = Uri.parse('$_baseUrl/images/register');
@@ -363,6 +375,7 @@ class BackupService {
         'latitude': latlng?.latitude ?? 0.0,
         'longitude': latlng?.longitude ?? 0.0,
         'mime_type': mimeType ?? '',
+        'album': albumName ?? '',
         'is_deleted': false,
       });
 
@@ -384,6 +397,110 @@ class BackupService {
     }
   }
 
+  Future<void> uploadManualFiles(List<PlatformFile> files, String albumName) async {
+    print('BackupService: Starting manual upload for ${files.length} files to album $albumName');
+
+    final session = await _auth.loadSession();
+    if (session == null) {
+      print('BackupService: No session found (not logged in). Aborting.');
+      return;
+    }
+
+    final userId = session['username'] as String;
+    final masterKeyBytes = session['masterKey'] as Uint8List;
+    final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
+
+    for (var file in files) {
+      try {
+        final Uint8List? fileBytes = file.bytes ?? (file.path != null ? await File(file.path!).readAsBytes() : null);
+        if (fileBytes == null) {
+          print('BackupService: Could not read bytes for file ${file.name}');
+          continue;
+        }
+
+        final imageId = _generateUUID();
+        final checksum = _calculateChecksum(fileBytes);
+
+        // Try to decode image to fetch sizes and create thumbnails naturally
+        final decodedImage = img.decodeImage(fileBytes);
+        int width = 0;
+        int height = 0;
+        Uint8List? thumb256Bytes;
+        Uint8List? thumb64Bytes;
+
+        if (decodedImage != null) {
+          width = decodedImage.width;
+          height = decodedImage.height;
+
+          // Generating thumbnails natively with `package:image`
+          final thumb256 = img.copyResizeCropSquare(decodedImage, size: 256);
+          thumb256Bytes = Uint8List.fromList(img.encodeJpg(thumb256, quality: 80));
+
+          final thumb64 = img.copyResizeCropSquare(decodedImage, size: 64);
+          thumb64Bytes = Uint8List.fromList(img.encodeJpg(thumb64, quality: 60));
+        } else {
+             print('BackupService: Could not decode image natively for thumbnails, it may be a video. Skipping thumbnail generation.');
+             continue; // Ente backend logic currently relies on having thumbs, handle differently if supporting videos
+        }
+
+        final variants = ['original', 'thumb_256', 'thumb_64'];
+        final urls = await _getUploadUrls(userId, imageId, variants);
+
+        if (urls == null || urls.length != 3) {
+          print('BackupService: Failed to get upload URLs for manual file $imageId');
+          continue;
+        }
+
+        final uploads = [
+          _encryptAndUpload(urls['original']!, fileBytes, masterKey, 'original'),
+          _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
+          _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
+        ];
+
+        final results = await Future.wait(uploads);
+        if (results.contains(false)) {
+          print('BackupService: Upload failed for manual file $imageId');
+          continue;
+        }
+
+        // Register Metadata
+        final uri = Uri.parse('$_baseUrl/images/register');
+        final now = DateTime.now().toUtc().toIso8601String();
+        
+        final body = jsonEncode({
+          'image_id': imageId,
+          'user_id': userId,
+          'created_at': now,
+          'modified_at': now,
+          'width': width,
+          'height': height,
+          'size': fileBytes.length,
+          'checksum': checksum,
+          'source_id': imageId, 
+          'latitude': 0.0,
+          'longitude': 0.0,
+          'mime_type': file.extension != null ? 'image/${file.extension}' : 'image/jpeg',
+          'album': albumName,
+          'is_deleted': false,
+        });
+
+        final response = await http.post(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: body,
+        );
+
+        if (response.statusCode == 200) {
+           print('BackupService: Successfully manually uploaded and registered ${file.name} to album $albumName');
+        }
+
+      } catch (e) {
+          print('BackupService: Error manual uploading file ${file.name}: $e');
+      }
+    }
+  }
+
+
   String _generateUUID() {
     final bytes = _crypto.sodium.randombytes.buf(16);
     return _toHex(bytes);
@@ -397,11 +514,14 @@ class BackupService {
     return bytes.map((e) => e.toRadixString(16).padLeft(2, '0')).join('');
   }
 
-  Future<RemoteImageResponse?> fetchRemoteImages(String userId, {String? cursor}) async {
+  Future<RemoteImageResponse?> fetchRemoteImages(String userId, {String? cursor, String? album}) async {
     try {
       var uriStr = '$_baseUrl/images?user_id=$userId';
       if (cursor != null) {
         uriStr += '&cursor=$cursor';
+      }
+      if (album != null && album.isNotEmpty) {
+        uriStr += '&album=${Uri.encodeComponent(album)}';
       }
 
       final uri = Uri.parse(uriStr);
@@ -418,10 +538,33 @@ class BackupService {
     }
   }
 
+  Future<List<Map<String, dynamic>>> fetchAlbums(String userId) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/albums?user_id=$userId');
+      final response = await http.get(uri);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        final list = json['albums'] as List<dynamic>;
+        return list.map((e) => e as Map<String, dynamic>).toList();
+      }
+      return [];
+    } catch (e) {
+      print('FetchAlbums Error: $e');
+      return [];
+    }
+  }
+
   Future<Uint8List?> fetchAndDecryptFromUrl(String url, SecureKey masterKey) async {
     try {
-      final response = await http.get(Uri.parse(url));
+      Uri uri = Uri.parse(url);
+      final response = await http.get(uri).timeout(const Duration(seconds: 120));
       
+      if (response.statusCode != 200) {
+        print('FetchImage Error: Status ${response.statusCode} for $url');
+        return null; // Return early on failure
+      }
+
       if (response.statusCode == 200) {
         final encryptedBytes = response.bodyBytes;
         
@@ -431,13 +574,141 @@ class BackupService {
         final nonce = Uint8List.fromList(encryptedBytes.sublist(0, nonceLen));
         final cipher = Uint8List.fromList(encryptedBytes.sublist(nonceLen));
         
-        final decrypted = _crypto.decrypt(cipher, nonce, masterKey);
-        return decrypted;
+        try {
+           final decrypted = _crypto.decrypt(cipher, nonce, masterKey);
+           return decrypted;
+        } catch (e) {
+           print('FetchImage Decryption Error: $e');
+           return null;
+        }
       }
       return null;
     } catch (e) {
       print('FetchImage Error: $e');
       return null;
     }
+  }
+
+  Future<RemoteImage?> fetchSingleRemoteImage(String userId, String imageId) async {
+    try {
+      final uriStr = '$_baseUrl/images/$imageId?user_id=$userId';
+      final uri = Uri.parse(uriStr);
+      final response = await http.get(uri);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return RemoteImage.fromJson(json['image']);
+      }
+      return null;
+    } catch (e) {
+      print('FetchSingleRemoteImage Error: $e');
+      return null;
+    }
+  }
+
+  Future<bool> uploadFaceDatabase() async {
+      final session = await _auth.loadSession();
+      if (session == null) return false;
+      final userId = session['username'] as String;
+      final masterKeyBytes = session['masterKey'] as Uint8List;
+      final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
+
+      final faces = await _db.getAllFaces();
+      final clusters = await _db.getAllClustersWithThumbnail();
+      
+      final Map<String, dynamic> exportData = {
+         'faces': [],
+         'clusters': clusters,
+      };
+
+      for (var f in faces) {
+         final blob = f['embedding'] as Uint8List?;
+         List<double>? vector;
+         if (blob != null) {
+            var buffer = blob.buffer;
+            var offset = blob.offsetInBytes;
+            if (offset % 4 != 0) {
+                 final copy = Uint8List.fromList(blob);
+                 buffer = copy.buffer;
+                 offset = 0;
+            }
+            vector = Float32List.view(buffer, offset, blob.lengthInBytes ~/ 4).toList();
+         }
+
+         exportData['faces'].add({
+            'id': f['id'],
+            'cluster_id': f['cluster_id'],
+            'image_path': f['image_path'],
+            'bbox': f['bbox'],
+            'landmarks': f['landmarks'], 
+            'embedding': vector,
+            'thumbnail': f['thumbnail'] != null ? base64Encode(f['thumbnail'] as Uint8List) : null,
+         });
+      }
+
+      final jsonBytes = utf8.encode(jsonEncode(exportData));
+      
+      final urls = await _getUploadUrls(userId, 'faces_blob', ['faces']);
+      if (urls == null || !urls.containsKey('faces')) return false;
+
+      return await _encryptAndUpload(urls['faces']!, Uint8List.fromList(jsonBytes), masterKey, 'faces');
+  }
+
+  Future<bool> downloadFaceDatabase({bool inMemoryOnly = false}) async {
+      final session = await _auth.loadSession();
+      if (session == null) return false;
+      final userId = session['username'] as String;
+      final masterKeyBytes = session['masterKey'] as Uint8List;
+      final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
+
+      final uri = Uri.parse('$_baseUrl/images/faces?user_id=$userId');
+      final response = await http.get(uri);
+      if (response.statusCode != 200) return false;
+
+      final url = jsonDecode(response.body)['url'] as String;
+      final bytes = await fetchAndDecryptFromUrl(url, masterKey);
+      if (bytes == null) return false;
+
+      final jsonStr = utf8.decode(bytes);
+      final data = jsonDecode(jsonStr);
+
+      if (inMemoryOnly) {
+         // Optionally you can keep it just in memory and replace standard getters.
+         // Web apps might need to overwrite local indexedDB using Sqflite FFI web though,
+         // but if the db works, we can just insert it straight via standard insert!
+      }
+
+      final db = await _db.database;
+      await db.delete('faces');
+      await db.delete('clusters');
+
+      final clusters = data['clusters'] as List<dynamic>;
+      for (var c in clusters) {
+         await db.insert('clusters', {
+             'id': c['id'],
+             'name': c['name'],
+             'thumbnail': c['thumbnail'] != null ? base64Decode(c['thumbnail']) : null,
+         });
+      }
+
+      final importedFaces = data['faces'] as List<dynamic>;
+      for (var f in importedFaces) {
+         Uint8List? embBytes;
+         if (f['embedding'] != null) {
+            final List<double> dlist = List<double>.from(f['embedding']);
+            embBytes = Float32List.fromList(dlist).buffer.asUint8List();
+         }
+         await db.insert('faces', {
+             'id': f['id'],
+             'cluster_id': f['cluster_id'],
+             'image_path': f['image_path'],
+             'bbox': f['bbox'],
+             'landmarks': f['landmarks'],
+             'embedding': embBytes,
+             'thumbnail': f['thumbnail'] != null ? base64Decode(f['thumbnail']) : null,
+         });
+      }
+
+      return true;
   }
 }

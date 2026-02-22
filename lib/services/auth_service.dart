@@ -11,6 +11,7 @@ class AuthService {
   static final AuthService _instance = AuthService._internal();
   final CryptoService _cryptoService = CryptoService();
   final _storage = const FlutterSecureStorage();
+  Map<String, dynamic>? _cachedSession;
 
   factory AuthService() {
     return _instance;
@@ -20,8 +21,14 @@ class AuthService {
 
   // Helper for Base URL
   String get _baseUrl {
-    if (kIsWeb) return 'http://localhost:8080';
-    if (Platform.isAndroid) {
+    if (kIsWeb) {
+      final host = Uri.base.host;
+      if (host.isNotEmpty && host != 'localhost' && host != '127.0.0.1') {
+        return 'http://$host:8080';
+      }
+      return 'http://localhost:8080';
+    }
+    if (!kIsWeb && Platform.isAndroid) {
       return 'http://192.168.18.11:8080';
     }
     return 'http://localhost:8080';
@@ -40,26 +47,36 @@ class AuthService {
     await _storage.write(key: 'master_key', value: base64Encode(masterKey));
     await _storage.write(key: 'private_key', value: base64Encode(privateKey));
     await _storage.write(key: 'public_key', value: base64Encode(publicKey));
+    _cachedSession = {
+      'username': username,
+      'masterKey': masterKey,
+      'privateKey': privateKey,
+      'publicKey': publicKey,
+    };
   }
 
   Future<Map<String, dynamic>?> loadSession() async {
+    if (_cachedSession != null) return _cachedSession;
+
     final user = await _storage.read(key: 'username');
     final mk = await _storage.read(key: 'master_key');
     final pk = await _storage.read(key: 'private_key');
     final pub = await _storage.read(key: 'public_key');
 
     if (user != null && mk != null && pk != null && pub != null) {
-      return {
+      _cachedSession = {
         'username': user,
         'masterKey': base64Decode(mk),
         'privateKey': base64Decode(pk),
         'publicKey': base64Decode(pub),
       };
+      return _cachedSession;
     }
     return null;
   }
 
   Future<void> logout() async {
+    _cachedSession = null;
     await _storage.deleteAll();
   }
 

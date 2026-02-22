@@ -36,6 +36,13 @@ class ThumbnailCache {
     }
 
     try {
+      if (kIsWeb) {
+        _isInitialized = true;
+        if (!_initCompleter.isCompleted) {
+          _initCompleter.complete();
+        }
+        return;
+      }
       final root = await getApplicationSupportDirectory();
       _cacheDir = Directory('${root.path}/thumbnails');
       if (!await _cacheDir!.exists()) {
@@ -124,7 +131,7 @@ class ThumbnailCache {
       try {
         final diskBytes = await file.readAsBytes();
         if (diskBytes.isNotEmpty) {
-           _putMemory(entity.id, diskBytes);
+           putMemory(entity.id, diskBytes);
            // debugPrint("Disk HIT for ${entity.id}");
            return diskBytes;
         }
@@ -145,7 +152,7 @@ class ThumbnailCache {
       
       if (bytes != null) {
         // 4. Save to Memory and Disk
-        _putMemory(entity.id, bytes);
+        putMemory(entity.id, bytes);
         // Fire and forget disk write to avoid blocking UI too much
         _saveToDisk(file, bytes); 
         return bytes;
@@ -168,7 +175,7 @@ class ThumbnailCache {
     return bytes;
   }
 
-  void _putMemory(String id, Uint8List bytes) {
+  void putMemory(String id, Uint8List bytes) {
     if (_memoryCache.containsKey(id)) {
       _currentMemorySizeBytes -= _memoryCache[id]!.lengthInBytes;
       _memoryCache.remove(id);
@@ -270,7 +277,7 @@ class ThumbnailCache {
           try {
              final bytes = await file.readAsBytes();
              if (bytes.isNotEmpty) {
-                 _putMemory(asset.id, bytes);
+                 putMemory(asset.id, bytes);
                  loaded++;
              }
           } catch (e) {

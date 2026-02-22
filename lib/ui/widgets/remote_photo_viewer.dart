@@ -88,7 +88,10 @@ class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKee
       }
 
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() {
+        _error = "Load Error: $e";
+        _isLoading = false;
+      });
     }
   }
 

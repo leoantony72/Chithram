@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
@@ -18,6 +19,7 @@ class ModelService {
   static const String faceRecognitionModelName = 'face-recognition';
 
   Future<bool> ensureModelsDownloaded() async {
+    if (kIsWeb) return true; // Web doesn't need downloaded models
     final success1 = await _downloadModel(faceDetectionModelName);
     final success2 = await _downloadModel(faceRecognitionModelName);
     return success1 && success2;

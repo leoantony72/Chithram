@@ -18,5 +18,6 @@ type Image struct {
 	Latitude   float64   `json:"latitude"`
 	Longitude  float64   `json:"longitude"`
 	MimeType   string    `json:"mime_type"`
+	Album      string    `json:"album"`
 	IsDeleted  bool      `json:"is_deleted"`
 }

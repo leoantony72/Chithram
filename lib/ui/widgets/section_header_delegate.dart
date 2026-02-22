@@ -12,15 +12,16 @@ class SectionHeaderDelegate extends SliverPersistentHeaderDelegate {
   @override
   Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
     return Container(
-      color: Colors.black.withOpacity(0.95),
-      padding: const EdgeInsets.symmetric(horizontal: 16.0),
-      alignment: Alignment.centerLeft,
+      color: Colors.black, // Merge seamlessly into pure black background
+      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
+      alignment: Alignment.bottomLeft,
       child: Text(
         title,
         style: const TextStyle(
           color: Colors.white,
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
+          fontSize: 15,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.3,
         ),
       ),
     );

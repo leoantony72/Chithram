@@ -1,5 +1,9 @@
 import 'dart:io';
+import 'dart:ui';
+import 'dart:math';
 import 'dart:typed_data';
+import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
@@ -131,15 +135,108 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
              shadows: [Shadow(color: Colors.black, blurRadius: 4)]
            ),
         ),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white),
+            onSelected: (value) {
+              if (value == 'About') {
+                _showDetails(context, currentItem);
+              }
+            },
+            itemBuilder: (BuildContext context) {
+              return [
+                const PopupMenuItem<String>(
+                  value: 'About',
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.black87),
+                      SizedBox(width: 8),
+                      Text('About'),
+                    ],
+                  ),
+                ),
+              ];
+            },
+          ),
+        ],
       ),
-      body: ExtendedImageGesturePageView.builder(
-        controller: _pageController,
-        itemCount: _items.length,
-        onPageChanged: _onPageChanged,
-        itemBuilder: (context, index) {
-          final item = _items[index];
-          return _buildItem(item, index);
+      body: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.arrowLeft): () {
+            _pageController.previousPage(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+            );
+          },
+          const SingleActivator(LogicalKeyboardKey.arrowRight): () {
+            _pageController.nextPage(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+            );
+          },
         },
+        child: Focus(
+          autofocus: true,
+          child: Stack(
+            children: [
+              ScrollConfiguration(
+                behavior: const _GalleryScrollBehavior(),
+                child: ExtendedImageGesturePageView.builder(
+                  controller: _pageController,
+                  itemCount: _items.length,
+                  onPageChanged: _onPageChanged,
+                  itemBuilder: (context, index) {
+                    final item = _items[index];
+                    return _buildItem(item, index);
+                  },
+                ),
+              ),
+              // Navigation Buttons (Hidden on Android/Touch)
+              if (_currentIndex > 0 && (kIsWeb || !Platform.isAndroid))
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 16.0),
+                    child: IconButton(
+                      onPressed: () {
+                        _pageController.previousPage(
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInOut,
+                        );
+                      },
+                      icon: const Icon(Icons.arrow_back_ios, color: Colors.white, size: 30),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black.withOpacity(0.3),
+                        hoverColor: Colors.black.withOpacity(0.5),
+                        padding: const EdgeInsets.all(12),
+                      ),
+                    ),
+                  ),
+                ),
+              if (_currentIndex < _items.length - 1 && (kIsWeb || !Platform.isAndroid))
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 16.0),
+                    child: IconButton(
+                      onPressed: () {
+                        _pageController.nextPage(
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInOut,
+                        );
+                      },
+                      icon: const Icon(Icons.arrow_forward_ios, color: Colors.white, size: 30),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.black.withOpacity(0.3),
+                        hoverColor: Colors.black.withOpacity(0.5),
+                        padding: const EdgeInsets.all(12),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -163,5 +260,157 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
 
   String _formatDateTime(DateTime date) {
     return DateFormat('d MMM yyyy, HH:mm').format(date);
+  }
+
+  void _showDetails(BuildContext context, GalleryItem item) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => _DetailsSheet(item: item),
+    );
+  }
+}
+
+class _GalleryScrollBehavior extends MaterialScrollBehavior {
+  const _GalleryScrollBehavior(); // Add const constructor
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.mouse,
+    PointerDeviceKind.trackpad,
+  };
+}
+
+class _DetailsSheet extends StatefulWidget {
+  final GalleryItem item;
+  const _DetailsSheet({required this.item});
+
+  @override
+  State<_DetailsSheet> createState() => _DetailsSheetState();
+}
+
+class _DetailsSheetState extends State<_DetailsSheet> {
+  String? _filePath;
+  int? _fileSize;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDetails();
+  }
+
+  Future<void> _loadDetails() async {
+    if (widget.item.type == GalleryItemType.local) {
+      final asset = widget.item.local!;
+      final file = await asset.file;
+      if (file != null) {
+        final size = await file.length();
+        if (mounted) {
+          setState(() {
+            _filePath = file.path;
+            _fileSize = size;
+            _loading = false;
+          });
+        }
+      } else {
+         if (mounted) setState(() => _loading = false);
+      }
+    } else {
+        if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return "0 B";
+    const suffixes = ["B", "KB", "MB", "GB", "TB"];
+    var i = (log(bytes) / log(1024)).floor();
+    return '${(bytes / pow(1024, i)).toStringAsFixed(2)} ${suffixes[i]}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    final isLocal = item.type == GalleryItemType.local;
+    final asset = item.local;
+
+    return Container(
+      padding: const EdgeInsets.all(16.0),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const Text(
+              "Details",
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            if (_loading) 
+               const Center(child: CircularProgressIndicator())
+            else ...[
+               _buildDetailRow(Icons.image, "Name", asset?.title ?? "Unknown"),
+               const Divider(),
+               _buildDetailRow(Icons.calendar_today, "Date", DateFormat('d MMM yyyy, HH:mm').format(item.date)),
+               const Divider(),
+               if (isLocal) ...[
+                  _buildDetailRow(Icons.photo_size_select_actual, "Resolution", "${asset?.width} x ${asset?.height}"),
+                  const Divider(),
+                  _buildDetailRow(Icons.sd_storage, "Size", _fileSize != null ? _formatBytes(_fileSize!) : "Unknown"),
+                  const Divider(),
+                  _buildDetailRow(Icons.folder, "Path", _filePath ?? "Unknown"),
+                  const Divider(),
+               ],
+               // Placeholder for EXIF data
+               _buildDetailRow(Icons.iso, "ISO", "Unknown"), // Requires EXIF package
+               const Divider(),
+               _buildDetailRow(Icons.shutter_speed, "Shutter Speed", "Unknown"), // Requires EXIF package
+            ],
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDetailRow(IconData icon, String label, String value) {
+     return Padding(
+       padding: const EdgeInsets.symmetric(vertical: 8.0),
+       child: Row(
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
+           Icon(icon, color: Colors.grey[600], size: 20),
+           const SizedBox(width: 16),
+           Expanded(
+             child: Column(
+               crossAxisAlignment: CrossAxisAlignment.start,
+               children: [
+                 Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                 const SizedBox(height: 4),
+                 Text(value, style: const TextStyle(fontSize: 14)),
+               ],
+             ),
+           ),
+         ],
+       ),
+     );
   }
 }

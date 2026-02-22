@@ -1,6 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../../services/backup_service.dart';
+import '../../services/federated_learning_service.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -21,19 +24,23 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _loadData() async {
-    // 1. Init Backup Service (loads settings)
-    await _backupService.init();
-    
-    // 2. Load Albums
-    final permission = await PhotoManager.requestPermissionExtend();
-    if (permission.isAuth) {
-      _allAlbums = await PhotoManager.getAssetPathList(type: RequestType.common);
-    }
-    
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
+    try {
+      // 1. Init Backup Service (loads settings)
+      await _backupService.init();
+      
+      // 2. Load Albums
+      final permission = await PhotoManager.requestPermissionExtend();
+      if (permission.isAuth) {
+        _allAlbums = await PhotoManager.getAssetPathList(type: RequestType.common);
+      }
+    } catch (e) {
+      debugPrint("Error loading settings data: $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -45,11 +52,43 @@ class _SettingsPageState extends State<SettingsPage> {
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               children: [
-                _buildBackupSection(),
-                const Divider(),
-                // Add more settings here later
+                if (!kIsWeb && !Platform.isWindows) _buildBackupSection(),
+                if (!kIsWeb && !Platform.isWindows) const Divider(),
+                if (!kIsWeb) _buildFLSection(),
+                if (kIsWeb) const Padding(padding: EdgeInsets.all(24), child: Center(child: Text("Web Interface Settings (Local Features Disabled)"))),
               ],
             ),
+    );
+  }
+
+  Widget _buildFLSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Text('Federated Learning', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        ),
+        ListTile(
+          title: const Text('Sync Model'),
+          subtitle: const Text('Download latest global model and enhance local detection'),
+          trailing: IconButton(
+            icon: const Icon(Icons.sync),
+            onPressed: () async {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("Syncing learning models...")),
+              );
+              await FederatedLearningService().init(); // Download global
+              await FederatedLearningService().trainAndUpload(); // Train local
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("Model sync completed!")),
+                );
+              }
+            },
+          ),
+        ),
+      ],
     );
   }
 

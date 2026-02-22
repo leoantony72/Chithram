@@ -1,6 +1,7 @@
 class RemoteImage {
   final String imageId;
   final String userId;
+  final String album;
   final int width;
   final int height;
   final String originalUrl;
@@ -12,6 +13,7 @@ class RemoteImage {
   RemoteImage({
     required this.imageId,
     required this.userId,
+    this.album = '',
     required this.width,
     required this.height,
     required this.originalUrl,
@@ -25,6 +27,7 @@ class RemoteImage {
     return RemoteImage(
       imageId: json['image_id'] ?? '',
       userId: json['user_id'] ?? '',
+      album: json['album'] ?? '',
       width: json['width'] ?? 0,
       height: json['height'] ?? 0,
       originalUrl: json['original_url'] ?? '',

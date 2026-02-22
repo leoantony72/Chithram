@@ -2,15 +2,20 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:sodium_libs/sodium_libs_sumo.dart';
 import '../../services/model_service.dart';
 import '../../services/database_service.dart';
 import '../../services/face_service.dart';
 import '../../services/cluster_service.dart';
+import '../../services/auth_service.dart';
+import '../../services/backup_service.dart';
+import '../../services/crypto_service.dart';
 
 class PeoplePage extends StatefulWidget {
   const PeoplePage({super.key});
@@ -58,15 +63,23 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 
   Future<void> _startScan() async {
+    if (kIsWeb) return;
+
     setState(() {
       _isScanning = true;
       _statusMessage = 'Initializing...';
     });
 
-    final PermissionState ps = await PhotoManager.requestPermissionExtend();
-    if (!ps.isAuth) {
-      setState(() => _isScanning = false);
-      return;
+    try {
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        final PermissionState ps = await PhotoManager.requestPermissionExtend();
+        if (!ps.isAuth) {
+          setState(() => _isScanning = false);
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint("PhotoManager permission check error (ignoring on Desktop): $e");
     }
 
     final modelsReady = await _modelService.ensureModelsDownloaded();
@@ -81,8 +94,13 @@ class _PeoplePageState extends State<PeoplePage> {
     await _faceService.initialize();
 
     // Pipeline Execution
-    await _scanDetectionPhase();
-    await _scanEmbeddingPhase();
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+       await _scanDetectionPhase();
+       await _scanEmbeddingPhase();
+    } else {
+       await _scanCloudPhotos();
+    }
+
     if (_statusMessage != 'Scan Complete') {
        await _scanClusteringPhase();
     }
@@ -97,6 +115,106 @@ class _PeoplePageState extends State<PeoplePage> {
   Future<void> _scanClusteringPhase() async {
     setState(() => _statusMessage = 'Phase 3: Clustering Faces...');
     await _clusterService.runClustering();
+  }
+
+  Future<void> _scanCloudPhotos() async {
+    setState(() => _statusMessage = 'Fetching from Cloud...');
+    
+    final auth = AuthService();
+    final crypto = CryptoService();
+    final backup = BackupService();
+    
+    final session = await auth.loadSession();
+    if (session == null) {
+      setState(() => _statusMessage = 'Not logged in');
+      return;
+    }
+    
+    final userId = session['username'] as String;
+    final masterKeyBytes = session['masterKey'] as Uint8List;
+    final masterKey = SecureKey.fromList(crypto.sodium, masterKeyBytes);
+    
+    String? cursor;
+    int processedCount = 0;
+    
+    while (_isScanning) {
+      final response = await backup.fetchRemoteImages(userId, cursor: cursor);
+      if (response == null || response.images.isEmpty) break;
+      
+      final tempDir = await getTemporaryDirectory();
+      
+      for (final image in response.images) {
+         if (!_isScanning) break;
+         
+         final uniqueId = 'cloud_${image.imageId}';
+         if (await _dbService.isImageProcessed(uniqueId)) {
+            continue;
+         }
+         
+         setState(() => _statusMessage = 'Downloading / Scanning: ${image.imageId.substring(0,8)}...');
+         
+         // Download and decrypt Original explicitly
+         final bytes = await backup.fetchAndDecryptFromUrl(image.originalUrl, masterKey);
+         if (bytes != null) {
+            final tempFile = File('${tempDir.path}/${image.imageId}.jpg');
+            await tempFile.writeAsBytes(bytes);
+            
+            await _processImageComplete(tempFile, uniqueId);
+            
+            // Delete massive original files to enforce local footprint
+            if (await tempFile.exists()) {
+               await tempFile.delete();
+            }
+         }
+         processedCount++;
+      }
+      
+      
+      final newCursor = response.nextCursor;
+      if (newCursor == null || newCursor.isEmpty || newCursor == cursor) {
+          break;
+      }
+      cursor = newCursor;
+    }
+  }
+
+  Future<void> _processImageComplete(File file, String uniqueId) async {
+      try {
+        final faces = await _faceService.detectFaces(file);
+        for (final face in faces) {
+            String? landmarksStr;
+            final le = face.leftEye;
+            final re = face.rightEye;
+            if (le != null && re != null) {
+              landmarksStr = '${le.x},${le.y};${re.x},${re.y}';
+            }
+
+            final data = await _faceService.getEmbeddingFromData(
+                 file, 
+                 face.boundingBox, 
+                 leftEye: le, 
+                 rightEye: re
+            );
+            
+            Uint8List? embeddingBytes;
+            Uint8List? thumbBytes;
+            if (data != null) {
+                embeddingBytes = Float32List.fromList(data.embedding).buffer.asUint8List();
+                thumbBytes = data.thumbnail;
+            }
+
+            await _dbService.insertFace(
+              uniqueId, 
+              face.boundingBox.toString(),
+              landmarksStr,
+              embeddingBytes,
+              thumbBytes
+            );
+        }
+        await _dbService.markImageAsProcessed(uniqueId);
+      } catch (e) {
+        print('Error processing complete $uniqueId: $e');
+      }
   }
   
   // Phase 1: Detect faces from new images and store BBoxes
@@ -140,7 +258,8 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 
   Future<void> _processDetectionForEntity(AssetEntity entity) async {
-      final file = await entity.file;
+      // Fetch the true original image file, bypass thumbnail cache entirely
+      final file = await entity.originFile;
       if (file == null) return;
 
       if (await _dbService.isImageProcessed(file.path)) return;
@@ -149,10 +268,10 @@ class _PeoplePageState extends State<PeoplePage> {
         final faces = await _faceService.detectFaces(file);
         for (final face in faces) {
             String? landmarksStr;
-            final le = face.landmarks[FaceLandmarkType.leftEye];
-            final re = face.landmarks[FaceLandmarkType.rightEye];
+            final le = face.leftEye;
+            final re = face.rightEye;
             if (le != null && re != null) {
-              landmarksStr = '${le.position.x},${le.position.y};${re.position.x},${re.position.y}';
+              landmarksStr = '${le.x},${le.y};${re.x},${re.y}';
             }
 
             await _dbService.insertFace(
@@ -314,33 +433,64 @@ class _PeoplePageState extends State<PeoplePage> {
     }
   }
 
+  Future<void> _uploadDb() async {
+      setState(() => _isScanning = true);
+      setState(() => _statusMessage = 'Uploading DB to MinIO...');
+      final s = await BackupService().uploadFaceDatabase();
+      setState(() {
+         _statusMessage = s ? 'Backup Complete' : 'Backup Failed';
+         _isScanning = false;
+      });
+  }
+
+  Future<void> _downloadDb() async {
+      setState(() => _isScanning = true);
+      setState(() => _statusMessage = 'Downloading DB from MinIO...');
+      final s = await BackupService().downloadFaceDatabase(inMemoryOnly: kIsWeb);
+      
+      // Temporary Web logic, fully refresh local state from DB if written, or notify user.
+      setState(() {
+         _statusMessage = s ? 'Restore Complete' : 'Restore Failed';
+         _isScanning = false;
+      });
+      _loadClusters();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black, // Pure black background
       appBar: AppBar(
-        title: const Text('People'),
+        title: const Text('People', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.black,
+        elevation: 0,
         actions: [
             PopupMenuButton<String>(
               onSelected: (v) {
                  if (v == 'export') _exportFaceData();
                  if (v == 'clear_db') _resetDatabase();
+                 if (v == 'upload_db') _uploadDb();
+                 if (v == 'download_db') _downloadDb();
               },
               itemBuilder: (context) => [
+                 const PopupMenuItem(value: 'download_db', child: Text('Restore AI from Cloud')),
+                 const PopupMenuItem(value: 'upload_db', child: Text('Backup AI to Cloud')),
+                 const PopupMenuDivider(),
                  const PopupMenuItem(value: 'export', child: Text('Export Vectors JSON')),
                  const PopupMenuItem(value: 'clear_db', child: Text('Reset People Database')),
               ],
             ),
           if (_isScanning)
-// ... existing code ...
             Center(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Text(_statusMessage, style: const TextStyle(fontSize: 12)),
+                child: Text(_statusMessage, style: const TextStyle(fontSize: 12, color: Colors.amber)),
               ),
             )
-          else
+          else if (!kIsWeb)
             IconButton(
-              icon: const Icon(Icons.sync),
+              icon: const Icon(Icons.sync_rounded),
+              tooltip: 'Scan Local & Cloud Photos',
               onPressed: _startScan,
             ),
         ],
@@ -350,67 +500,110 @@ class _PeoplePageState extends State<PeoplePage> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.people_outline, size: 64, color: Colors.grey),
-                  const SizedBox(height: 16),
-                  const Text('No people found yet.', style: TextStyle(color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: _startScan,
-                    child: const Text('Scan Photos'),
+                  Container(
+                     padding: const EdgeInsets.all(24),
+                     decoration: BoxDecoration(
+                         shape: BoxShape.circle,
+                         color: Colors.white.withOpacity(0.05)
+                     ),
+                     child: const Icon(Icons.people_outline, size: 64, color: Colors.white54),
                   ),
+                  const SizedBox(height: 24),
+                  const Text('No people found yet.', style: TextStyle(color: Colors.white54, fontSize: 18)),
+                  const SizedBox(height: 32),
+                  ElevatedButton.icon(
+                    onPressed: _downloadDb,
+                    icon: const Icon(Icons.cloud_download_rounded),
+                    label: const Text('Load from Cloud'),
+                    style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        backgroundColor: Colors.blueAccent,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (!kIsWeb)
+                      TextButton.icon(
+                        onPressed: _startScan,
+                        icon: const Icon(Icons.document_scanner),
+                        label: const Text('Scan Local Photos'),
+                        style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                      ),
                 ],
               ),
             )
           : GridView.builder(
-              padding: const EdgeInsets.all(16),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                mainAxisSpacing: 24,
-                crossAxisSpacing: 16,
-                childAspectRatio: 0.85,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+              gridDelegate: kIsWeb
+                  ? const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 6,
+                      mainAxisSpacing: 4,
+                      crossAxisSpacing: 4,
+                      childAspectRatio: 0.85,
+                    )
+                  : const SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 220,
+                      mainAxisSpacing: 4,
+                      crossAxisSpacing: 4,
+                      childAspectRatio: 0.85,
+                    ),
               itemCount: _clusters.length,
               itemBuilder: (context, index) {
                 final cluster = _clusters[index];
-                return GestureDetector(
-                  onTap: () async {
-                    await context.push(
-                      '/person_details',
-                      extra: {
-                        'name': cluster['name'] ?? 'Person ${cluster['id']}',
-                        'id': cluster['id'],
-                      },
-                    );
-                    _loadClusters();
-                  },
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Expanded(
-                        child: AspectRatio(
-                          aspectRatio: 1,
-                          child: Container(
-                            clipBehavior: Clip.antiAlias,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Colors.grey[800],
+                return MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () async {
+                      await context.push(
+                        '/person_details',
+                        extra: {
+                          'name': cluster['name'] ?? 'Person ${cluster['id']}',
+                          'id': cluster['id'],
+                        },
+                      );
+                      _loadClusters();
+                    },
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Expanded(
+                          child: AspectRatio(
+                            aspectRatio: 1,
+                            child: Hero(
+                              tag: 'person_${cluster['id']}',
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                     BoxShadow(
+                                        color: Colors.black.withOpacity(0.5),
+                                        blurRadius: 12,
+                                        offset: const Offset(0, 6)
+                                     )
+                                  ],
+                                ),
+                                child: ClipOval(
+                                    child: _buildFaceThumbnail(cluster['thumbnail'] as Uint8List?)
+                                ),
+                              ),
                             ),
-                            child: _buildFaceThumbnail(cluster['thumbnail'] as Uint8List?), 
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        cluster['name'] ?? 'Person ${cluster['id']}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
+                        const SizedBox(height: 12),
+                        Text(
+                          cluster['name'] ?? 'Person ${cluster['id']}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w500,
+                            letterSpacing: 0.3,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 );
               },
@@ -420,9 +613,17 @@ class _PeoplePageState extends State<PeoplePage> {
 
   Widget _buildFaceThumbnail(Uint8List? thumbBytes) {
     if (thumbBytes != null && thumbBytes.isNotEmpty) {
-        return Image.memory(thumbBytes, fit: BoxFit.cover);
+        return Image.memory(
+           thumbBytes, 
+           fit: BoxFit.cover,
+           filterQuality: FilterQuality.high,
+           gaplessPlayback: true,
+        );
     }
-    return const Icon(Icons.person, color: Colors.white);
+    return Container(
+        color: Colors.grey[800],
+        child: const Icon(Icons.person_rounded, color: Colors.white54, size: 48)
+    );
   }
 } // End of _PeoplePageState
 

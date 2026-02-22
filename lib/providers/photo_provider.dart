@@ -19,6 +19,7 @@ class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> _paths = [];
   List<AssetEntity> _allAssets = [];
   List<RemoteImage> _remoteImages = []; 
+  List<Map<String, dynamic>> _remoteAlbums = []; 
 
   // Combined List
   List<GalleryItem> _allItems = [];
@@ -42,6 +43,7 @@ class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> get paths => _paths;
   List<AssetEntity> get allAssets => _allAssets;
   List<RemoteImage> get remoteImages => _remoteImages;
+  List<Map<String, dynamic>> get remoteAlbums => _remoteAlbums;
   List<GalleryItem> get allItems => _allItems;
   
   List<PhotoGroup> get groupedByDay => _groupedByDay;
@@ -55,17 +57,23 @@ class PhotoProvider with ChangeNotifier {
   bool get hasPermission => _hasPermission;
   bool get isLoading => _isLoading;
   
-  Future<void> _fetchRemotePhotos() async {
+  Future<void> fetchRemotePhotos() async {
     final session = await AuthService().loadSession();
     if (session != null) {
       final username = session['username'] as String;
-      final response = await BackupService().fetchRemoteImages(username);
-      if (response != null) {
-        _remoteImages = response.images;
-        // Re-group with new data
-        _groupAssets();
-        notifyListeners();
+      
+      // Fetch Images
+      final imgResponse = await BackupService().fetchRemoteImages(username);
+      if (imgResponse != null) {
+        _remoteImages = imgResponse.images;
       }
+
+      // Fetch Albums
+      _remoteAlbums = await BackupService().fetchAlbums(username);
+
+      // Re-group with new data
+      _groupAssets();
+      notifyListeners();
     }
   }
 
@@ -91,12 +99,11 @@ class PhotoProvider with ChangeNotifier {
       if (!status.isGranted) {
          await Permission.accessMediaLocation.request();
       }
-      
-      await fetchAssets();
     } else {
       _hasPermission = false;
-      await PhotoManager.openSetting();
     }
+    
+    await fetchAssets();
     notifyListeners();
   }
   
@@ -109,7 +116,7 @@ class PhotoProvider with ChangeNotifier {
       // Only attempt to fetch local assets on mobile platforms
       bool isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
       
-      if (isMobile) {
+      if (isMobile && _hasPermission) {
         final FilterOptionGroup option = FilterOptionGroup(
           imageOption: const FilterOption(
             needTitle: true,
@@ -146,7 +153,7 @@ class PhotoProvider with ChangeNotifier {
       } 
       
       // Always fetch remote photos regardless of platform or local assets
-      await _fetchRemotePhotos(); 
+      await fetchRemotePhotos(); 
 
     } catch (e) {
       debugPrint("Error fetching assets: $e");

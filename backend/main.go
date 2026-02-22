@@ -60,13 +60,20 @@ func main() {
 	r.POST("/upload", controllers.BatchUploadImages)
 
 	// Image Endpoints
+	r.GET("/albums", controllers.GetAlbums)
 	r.GET("/images", controllers.ListImages)
-	// r.GET("/image/download", controllers.DownloadImage) // Deprecated/Removed
+	r.GET("/images/:id", controllers.GetSingleImage)
 	r.POST("/images/register", controllers.RegisterImage)
 	r.POST("/images/upload_urls", controllers.GenerateUploadURLs)
 	r.GET("/images/checksums", controllers.GetChecksums)  // Add this
 	r.GET("/images/source_ids", controllers.GetSourceIDs) // Add this for fast deduplication
+	r.GET("/images/faces", controllers.GetFacesDownloadURL)
 	r.GET("/sync", controllers.SyncImages)
+
+	// Federated Learning Endpoints
+	services.InitFLService()
+	r.POST("/fl/update", controllers.UploadLocalUpdate)
+	r.GET("/fl/global", controllers.GetGlobalModel)
 
 	// Ensure models directory exists
 	modelsDir := "./models"
