@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:io' as io;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -44,7 +44,7 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
   Future<void> _loadPersonAssets() async {
     final paths = await _dbService.getPhotoPathsForCluster(widget.personId);
     
-    final List<File> localFiles = [];
+    final List<io.File> localFiles = [];
     final List<String> cloudIds = [];
 
     for (final p in paths) {
@@ -52,7 +52,7 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
         cloudIds.add(p.substring(6));
       } else {
         if (!kIsWeb) {
-           final f = File(p);
+           final f = io.File(p);
            if (await f.exists()) {
              localFiles.add(f);
            }
@@ -174,7 +174,7 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
                             if (group.isCloud) {
                                return _CloudPhotoTile(imageId: item as String);
                             } else {
-                               final file = item as File;
+                               final file = item as io.File;
                                if (kIsWeb) return const SizedBox.shrink(); 
                                return GestureDetector(
                                   onTap: () {
@@ -296,7 +296,7 @@ class _CloudPhotoTileState extends State<_CloudPhotoTile> {
 }
 
 class _SimplePhotoViewer extends StatelessWidget {
-  final File file;
+  final dynamic file;
   const _SimplePhotoViewer({required this.file});
 
   @override
@@ -313,7 +313,7 @@ class _SimplePhotoViewer extends StatelessWidget {
         child: kIsWeb 
             ? const Text('Not supported on Web', style: TextStyle(color: Colors.white)) 
             : ExtendedImage.file(
-                file, 
+                file as dynamic, 
                 fit: BoxFit.contain,
                 mode: ExtendedImageMode.gesture,
                 onDoubleTap: (state) {
