@@ -14,6 +14,9 @@ import 'dart:convert';
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
+import '../../models/gallery_item.dart';
+import '../../models/remote_image.dart';
+import '../widgets/remote_thumbnail_widget.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
@@ -29,8 +32,8 @@ class _MapPageState extends State<MapPage> {
   bool _isDarkMap = true; // Default to dark google style
   
   // Data State -- Derived from Provider
-  List<AssetEntity> _geoAssets = [];
-  List<AssetEntity> _visibleAssets = [];
+  List<GalleryItem> _geoItems = [];
+  List<GalleryItem> _visibleItems = [];
   
   Timer? _debounceTimer;
 
@@ -57,24 +60,31 @@ class _MapPageState extends State<MapPage> {
 
   void _updateGeoAssetsFromProvider() {
     final provider = Provider.of<PhotoProvider>(context, listen: false);
-    final all = provider.allAssets;
+    final all = provider.allItems;
     final cache = provider.locationCache;
     
-    // Filter assets that have a location (either in cache or native)
-    final List<AssetEntity> withLoc = [];
+    // Filter items that have a location (either in cache, native, or remote object)
+    final List<GalleryItem> withLoc = [];
     
-    for (final asset in all) {
-      if (cache.containsKey(asset.id)) {
-        withLoc.add(asset);
-      } else if ((asset.latitude ?? 0) != 0 && (asset.longitude ?? 0) != 0) {
-        // We technically should add this to cache for consistency, but provider handles that background scan
-        // For UI purposes, we can use it.
-        withLoc.add(asset);
+    for (final item in all) {
+      if (item.type == GalleryItemType.local) {
+        final asset = item.local!;
+        if (cache.containsKey(asset.id)) {
+          withLoc.add(item);
+        } else if ((asset.latitude ?? 0) != 0 && (asset.longitude ?? 0) != 0) {
+          withLoc.add(item);
+        }
+      } else {
+        // Remote
+        final remote = item.remote!;
+        if ((remote.latitude != 0) && (remote.longitude != 0)) {
+          withLoc.add(item);
+        }
       }
     }
     
     setState(() {
-      _geoAssets = withLoc;
+      _geoItems = withLoc;
     });
     
     // Auto-center on the "mass" of photos if we have data AND havn't moved map yet (optional check)
@@ -87,20 +97,28 @@ class _MapPageState extends State<MapPage> {
       }
     }
     
-    WidgetsBinding.instance.addPostFrameCallback((_) => _updateVisibleAssets());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateVisibleItems());
   }
 
-  latlong.LatLng? _calculateCentroid(List<AssetEntity> assets, Map<String, latlong.LatLng> cache) {
-    if (assets.isEmpty) return null;
+  latlong.LatLng? _calculateCentroid(List<GalleryItem> items, Map<String, latlong.LatLng> cache) {
+    if (items.isEmpty) return null;
     double sumLat = 0;
     double sumLng = 0;
     int count = 0;
     
-    for (var asset in assets) {
-      // Prefer cache, fallback to native
-      latlong.LatLng? pos = cache[asset.id];
-      if (pos == null && (asset.latitude ?? 0) != 0) {
-         pos = latlong.LatLng(asset.latitude!, asset.longitude!);
+    for (var item in items) {
+      latlong.LatLng? pos;
+      if (item.type == GalleryItemType.local) {
+        final asset = item.local!;
+        pos = cache[asset.id];
+        if (pos == null && (asset.latitude ?? 0) != 0) {
+           pos = latlong.LatLng(asset.latitude!, asset.longitude!);
+        }
+      } else {
+        final remote = item.remote!;
+        if (remote.latitude != 0) {
+          pos = latlong.LatLng(remote.latitude, remote.longitude);
+        }
       }
       
       if (pos != null) {
@@ -118,7 +136,7 @@ class _MapPageState extends State<MapPage> {
      if (hasGesture) {
        _debounceTimer?.cancel();
        _debounceTimer = Timer(const Duration(milliseconds: 300), () {
-          _updateVisibleAssets();
+          _updateVisibleItems();
        });
      }
      if (position.zoom != null && position.zoom != _currentZoom) {
@@ -128,7 +146,7 @@ class _MapPageState extends State<MapPage> {
      }
   }
 
-  void _updateVisibleAssets() {
+  void _updateVisibleItems() {
      if (!mounted) return;
      final provider = Provider.of<PhotoProvider>(context, listen: false);
      final cache = provider.locationCache;
@@ -136,18 +154,28 @@ class _MapPageState extends State<MapPage> {
      // Retrieve visible bounds
      final bounds = _mapController.camera.visibleBounds;
      
-     // Filter _geoAssets that are inside bounds
-     final visible = _geoAssets.where((asset) {
-        latlong.LatLng? pos = cache[asset.id];
-        if (pos == null && (asset.latitude ?? 0) != 0) {
-             pos = latlong.LatLng(asset.latitude!, asset.longitude!);
+     // Filter _geoItems that are inside bounds
+     final visible = _geoItems.where((item) {
+        latlong.LatLng? pos;
+        if (item.type == GalleryItemType.local) {
+          final asset = item.local!;
+          pos = cache[asset.id];
+          if (pos == null && (asset.latitude ?? 0) != 0) {
+              pos = latlong.LatLng(asset.latitude!, asset.longitude!);
+          }
+        } else {
+          final remote = item.remote!;
+          if (remote.latitude != 0) {
+            pos = latlong.LatLng(remote.latitude, remote.longitude);
+          }
         }
+        
         if (pos == null) return false;
         return bounds.contains(pos);
      }).toList();
 
      setState(() {
-        _visibleAssets = visible;
+        _visibleItems = visible;
      });
   }
 
@@ -158,8 +186,8 @@ class _MapPageState extends State<MapPage> {
     
     // Calculate date range string
     String dateRangeText = "";
-    if (_geoAssets.isNotEmpty) {
-      final dates = _geoAssets.map((e) => e.createDateTime).whereType<DateTime>().toList();
+    if (_geoItems.isNotEmpty) {
+      final dates = _geoItems.map((e) => e.date).toList();
       if (dates.isNotEmpty) {
         dates.sort();
         final start = dates.first;
@@ -185,7 +213,7 @@ class _MapPageState extends State<MapPage> {
               ),
               onPositionChanged: _onMapPositionChanged,
               onMapReady: () {
-                  _updateVisibleAssets();
+                  _updateVisibleItems();
               },
             ),
             children: [
@@ -199,11 +227,16 @@ class _MapPageState extends State<MapPage> {
               ),
               
               // Heatmap Layer
-              if (_currentZoom < 14 && _geoAssets.isNotEmpty)
+              if (_currentZoom < 14 && _geoItems.isNotEmpty)
                 HeatMapLayer(
                   heatMapDataSource: InMemoryHeatMapDataSource(
-                    data: _geoAssets.map((e) {
-                        final pos = provider.locationCache[e.id] ?? latlong.LatLng(e.latitude ?? 0, e.longitude ?? 0);
+                    data: _geoItems.map<WeightedLatLng>((item) {
+                        latlong.LatLng pos;
+                        if (item.type == GalleryItemType.local) {
+                          pos = provider.locationCache[item.local!.id] ?? latlong.LatLng(item.local!.latitude ?? 0, item.local!.longitude ?? 0);
+                        } else {
+                          pos = latlong.LatLng(item.remote!.latitude, item.remote!.longitude);
+                        }
                         return WeightedLatLng(pos, 1);
                     }).toList(),
                   ),
@@ -223,19 +256,24 @@ class _MapPageState extends State<MapPage> {
                 ),
                 
               // Markers Layer (DOTS ONLY - NO PHOTOS)
-              if (_currentZoom >= 14 && _geoAssets.isNotEmpty)
+              if (_currentZoom >= 14 && _geoItems.isNotEmpty)
                 MarkerLayer(
-                  markers: _geoAssets.map((asset) {
-                    final pos = provider.locationCache[asset.id] ?? latlong.LatLng(asset.latitude ?? 0, asset.longitude ?? 0);
+                  markers: _geoItems.map<Marker>((item) {
+                     latlong.LatLng pos;
+                     if (item.type == GalleryItemType.local) {
+                        pos = provider.locationCache[item.local!.id] ?? latlong.LatLng(item.local!.latitude ?? 0, item.local!.longitude ?? 0);
+                     } else {
+                        pos = latlong.LatLng(item.remote!.latitude, item.remote!.longitude);
+                     }
                     return Marker(
                       point: pos,
                       width: 12, 
                       height: 12,
                       child: GestureDetector(
-                         onTap: () => context.push('/viewer', extra: asset),
+                         onTap: () => context.push('/viewer', extra: item),
                          child: Container(
                             decoration: BoxDecoration(
-                              color: const Color(0xFF4285F4),
+                              color: item.type == GalleryItemType.local ? const Color(0xFF4285F4) : Colors.orangeAccent,
                               shape: BoxShape.circle,
                               border: Border.all(color: Colors.white, width: 2),
                               boxShadow: [
@@ -330,7 +368,7 @@ class _MapPageState extends State<MapPage> {
                foregroundColor: const Color(0xFFE3E3E3),
                shape: const CircleBorder(),
                onPressed: () {
-                  final center = _calculateCentroid(_geoAssets, provider.locationCache);
+                  final center = _calculateCentroid(_geoItems, provider.locationCache);
                   if (center != null) _mapController.move(center, 10.0);
                },
                child: const Icon(Icons.my_location),
@@ -375,7 +413,7 @@ class _MapPageState extends State<MapPage> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   Text(
-                                      _visibleAssets.isEmpty ? "No photos in view" : "${_visibleAssets.length} photos", 
+                                      _visibleItems.isEmpty ? "No photos in view" : "${_visibleItems.length} photos", 
                                       style: TextStyle(
                                         color: _isDarkMap ? Colors.white : Colors.black87, 
                                         fontSize: 16,
@@ -401,7 +439,7 @@ class _MapPageState extends State<MapPage> {
                     ),
                     
                     // Grid Content
-                    _visibleAssets.isEmpty 
+                    _visibleItems.isEmpty 
                     ? const SliverFillRemaining(child: SizedBox())
                     : SliverGrid(
                         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -412,23 +450,27 @@ class _MapPageState extends State<MapPage> {
                         ),
                         delegate: SliverChildBuilderDelegate(
                           (context, index) {
-                            final asset = _visibleAssets[index];
-                            return InkWell(
-                              onTap: () => context.push('/viewer', extra: asset),
-                              child: Hero(
-                                tag: 'map_grid_${asset.id}',
-                                child: Image(
-                                  image: AssetEntityImageProvider(
-                                    asset,
-                                    isOriginal: false,
-                                    thumbnailSize: const ThumbnailSize.square(200),
+                            final item = _visibleItems[index];
+                            if (item.type == GalleryItemType.local) {
+                               return InkWell(
+                                onTap: () => context.push('/viewer', extra: item),
+                                child: Hero(
+                                  tag: 'map_grid_${item.id}',
+                                  child: Image(
+                                    image: AssetEntityImageProvider(
+                                      item.local!,
+                                      isOriginal: false,
+                                      thumbnailSize: const ThumbnailSize.square(200),
+                                    ),
+                                    fit: BoxFit.cover,
                                   ),
-                                  fit: BoxFit.cover,
                                 ),
-                              ),
-                            );
+                              );
+                            } else {
+                               return RemoteThumbnailWidget(image: item.remote!);
+                            }
                           },
-                          childCount: _visibleAssets.length,
+                          childCount: _visibleItems.length,
                         ),
                       ),
                   ],

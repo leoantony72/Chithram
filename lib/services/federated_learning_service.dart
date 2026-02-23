@@ -16,9 +16,11 @@ import 'model_service.dart';
 
 class FederatedLearningService {
   static String get serverUrl {
-    if (kIsWeb) return 'http://localhost:8080';
+    if (Platform.isWindows) {
+      return 'http://localhost:8080';
+    }
     if (Platform.isAndroid || Platform.isIOS) {
-      return 'http://192.168.1.5:8080'; // Replace with actual server IP
+      return 'http://192.168.18.11:8080';
     }
     return 'http://localhost:8080';
   }

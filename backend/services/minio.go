@@ -14,7 +14,7 @@ import (
 var MinioClient *minio.Client
 
 const (
-	Endpoint        = "127.0.0.1:9000" // Reachable from Android units on LAN
+	Endpoint        = "192.168.18.11:9000" // Reachable from Android units on LAN
 	AccessKeyID     = "minioadmin"
 	SecretAccessKey = "minioadmin"
 	UseSSL          = false

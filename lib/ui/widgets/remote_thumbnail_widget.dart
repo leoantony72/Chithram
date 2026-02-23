@@ -13,8 +13,9 @@ import 'package:sodium_libs/sodium_libs_sumo.dart';
 
 class RemoteThumbnailWidget extends StatefulWidget {
   final RemoteImage image;
+  final VoidCallback? onTap;
 
-  const RemoteThumbnailWidget({super.key, required this.image});
+  const RemoteThumbnailWidget({super.key, required this.image, this.onTap});
 
   @override
   State<RemoteThumbnailWidget> createState() => _RemoteThumbnailWidgetState();
@@ -109,6 +110,8 @@ class _RemoteThumbnailWidgetState extends State<RemoteThumbnailWidget> {
             onTap: () {
               if (isSelectionMode) {
                 selection.toggleSelection(item);
+              } else if (widget.onTap != null) {
+                widget.onTap!();
               } else {
                 context.push('/viewer', extra: item);
               }

@@ -13,12 +13,14 @@ class ThumbnailWidget extends StatefulWidget {
   final AssetEntity entity;
   final ValueListenable<bool>? isFastScrolling;
   final String? heroTagPrefix;
+  final VoidCallback? onTap;
   
   const ThumbnailWidget({
     super.key, 
     required this.entity,
     this.isFastScrolling,
     this.heroTagPrefix,
+    this.onTap,
   });
 
   @override
@@ -142,6 +144,8 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
               onTap: () {
                 if (isSelectionMode) {
                   selection.toggleSelection(item);
+                } else if (widget.onTap != null) {
+                  widget.onTap!();
                 } else {
                   context.push('/viewer', extra: item);
                 }

@@ -11,6 +11,8 @@ import 'dart:async';
 import '../models/photo_group.dart';
 import '../services/backup_service.dart';
 import '../services/auth_service.dart';
+import '../services/database_service.dart';
+import 'package:exif/exif.dart';
 
 import '../models/gallery_item.dart';
 import '../models/remote_image.dart';
@@ -61,18 +63,88 @@ class PhotoProvider with ChangeNotifier {
     final session = await AuthService().loadSession();
     if (session != null) {
       final username = session['username'] as String;
+      debugPrint("PhotoProvider: Fetching remote photos for $username...");
       
-      // Fetch Images
-      final imgResponse = await BackupService().fetchRemoteImages(username);
-      if (imgResponse != null) {
-        _remoteImages = imgResponse.images;
+      List<RemoteImage> allRemoteImages = [];
+      String? currentCursor;
+      bool hasMore = true;
+
+      while (hasMore) {
+        final imgResponse = await BackupService().fetchRemoteImages(username, cursor: currentCursor);
+        if (imgResponse != null) {
+          allRemoteImages.addAll(imgResponse.images);
+          currentCursor = imgResponse.nextCursor;
+          hasMore = imgResponse.nextCursor != null && imgResponse.nextCursor!.isNotEmpty;
+          
+          // Optionally update sync cursor
+          if (imgResponse.nextCursor != null) {
+             await DatabaseService().setBackupSetting('last_remote_sync', imgResponse.nextCursor!);
+          }
+        } else {
+          debugPrint("PhotoProvider: Failed to fetch remote images page.");
+          hasMore = false;
+        }
       }
 
+      debugPrint("PhotoProvider: Received ${allRemoteImages.length} total remote images.");
+      _remoteImages = allRemoteImages;
+
       // Fetch Albums
+      debugPrint("PhotoProvider: Fetching remote albums...");
       _remoteAlbums = await BackupService().fetchAlbums(username);
+      debugPrint("PhotoProvider: Received ${_remoteAlbums.length} remote albums.");
 
       // Re-group with new data
       _groupAssets();
+      notifyListeners();
+    } else {
+      debugPrint("PhotoProvider: Cannot fetch remote photos - No session found.");
+    }
+  }
+
+  Future<void> refresh() async {
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      final session = await AuthService().loadSession();
+      if (session == null) return;
+      final username = session['username'] as String;
+
+      // 1. Local Refresh
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+         _hasPermission = await PhotoManager.requestPermissionExtend().then((ps) => ps.isAuth);
+         await fetchAssets();
+      } else if (!kIsWeb && Platform.isWindows) {
+         _hasPermission = true;
+         await fetchAssets();
+      } else {
+         await fetchRemotePhotos();
+      }
+
+      // If we want TRUE incremental sync for Pull-to-Refresh:
+      final lastSync = await DatabaseService().getBackupSetting('last_remote_sync') ?? '';
+      final syncResponse = await BackupService().syncImages(username, lastSync);
+
+      if (syncResponse != null && syncResponse.updates.isNotEmpty) {
+          // Merge updates (highly simplified: just append for now, or replace by ID)
+          final Map<String, RemoteImage> map = { for (var e in _remoteImages) e.imageId : e };
+          for (var up in syncResponse.updates) {
+             map[up.imageId] = up; 
+          }
+          _remoteImages = map.values.toList();
+          
+          if (syncResponse.nextCursor != null) {
+             await DatabaseService().setBackupSetting('last_remote_sync', syncResponse.nextCursor!);
+          }
+          
+          _groupAssets();
+          notifyListeners();
+      }
+    } catch (e) {
+      debugPrint("Refresh Error: $e");
+    } finally {
+      _isLoading = false;
       notifyListeners();
     }
   }
@@ -279,9 +351,33 @@ class PhotoProvider with ChangeNotifier {
        
        await Future.wait(batch.map((asset) async {
           try {
+             latlong.LatLng? pos;
+             // 1. Try native
              final data = await asset.latlngAsync(); 
              if (data != null && (data.latitude != 0 || data.longitude != 0)) {
-                _locationCache[asset.id] = latlong.LatLng(data.latitude!, data.longitude!);
+                pos = latlong.LatLng(data.latitude!, data.longitude!);
+             }
+             
+             // 2. Windows Fallback (Read EXIF using dedicated package)
+             if (pos == null && !kIsWeb && Platform.isWindows) {
+                final file = await asset.file;
+                if (file != null) {
+                   final bytes = await file.readAsBytes();
+                   final tags = await readExifFromBytes(bytes);
+                   
+                   if (tags.containsKey('GPS GPSLatitude') && tags.containsKey('GPS GPSLongitude')) {
+                      final latValue = _parseExifDMS(tags['GPS GPSLatitude'], tags['GPS GPSLatitudeRef']?.toString());
+                      final lonValue = _parseExifDMS(tags['GPS GPSLongitude'], tags['GPS GPSLongitudeRef']?.toString());
+                      
+                      if (latValue != null && lonValue != null) {
+                        pos = latlong.LatLng(latValue, lonValue);
+                      }
+                   }
+                }
+             }
+
+             if (pos != null) {
+                _locationCache[asset.id] = pos;
                 needsSave = true;
              }
           } catch(e) {
@@ -342,6 +438,45 @@ class PhotoProvider with ChangeNotifier {
       await file.writeAsString(jsonEncode(output));
     } catch (e) {
       debugPrint("Cache save error: $e");
+    }
+  }
+
+  double? _parseExifDMS(IfdTag? tag, String? ref) {
+    if (tag == null || tag.values is! List || tag.values.length < 3) return null;
+    
+    try {
+      final values = tag.values.toList();
+      double degrees = 0;
+      double minutes = 0;
+      double seconds = 0;
+
+      // EXIF rational conversion
+      if (values[0] is Ratio) {
+        degrees = (values[0] as Ratio).toDouble();
+      } else {
+        degrees = double.parse(values[0].toString());
+      }
+
+      if (values[1] is Ratio) {
+        minutes = (values[1] as Ratio).toDouble();
+      } else {
+        minutes = double.parse(values[1].toString());
+      }
+
+      if (values[2] is Ratio) {
+        seconds = (values[2] as Ratio).toDouble();
+      } else {
+        seconds = double.parse(values[2].toString());
+      }
+
+      double decimal = degrees + (minutes / 60.0) + (seconds / 3600.0);
+      
+      if (ref == 'S' || ref == 'W') {
+        decimal = -decimal;
+      }
+      return decimal;
+    } catch (e) {
+      return null;
     }
   }
 }

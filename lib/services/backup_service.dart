@@ -39,10 +39,29 @@ class BackupService {
       }
       return 'http://localhost:8080';
     }
+    // For Windows running the local server, localhost is often more reliable
+    if (!kIsWeb && Platform.isWindows) {
+      return 'http://localhost:8080';
+    }
     if (!kIsWeb && Platform.isAndroid) {
-      return 'http://192.168.18.11:8080';
+       return 'http://192.168.18.11:8080';
     }
     return 'http://localhost:8080';
+  }
+
+  Uri _resolveUri(String url) {
+    Uri uri = Uri.parse(url);
+    if (kIsWeb) return uri;
+    
+    // If the URL points to localhost/127.0.0.1 but we are on a platform that needs the LAN IP
+    if ((uri.host == '127.0.0.1' || uri.host == 'localhost')) {
+       final base = _baseUrl;
+       final baseUri = Uri.parse(base);
+       if (baseUri.host != 'localhost' && baseUri.host != '127.0.0.1') {
+          return uri.replace(host: baseUri.host);
+       }
+    }
+    return uri;
   }
 
   // Initialize settings
@@ -103,10 +122,11 @@ class BackupService {
       // Recreate SecureKey from bytes
       final key = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
       
-      // 2. Fetch Cloud Source IDs (Fast Deduplication)
-      print('BackupService: Fetching existing source IDs from cloud...');
+      // 2. Fetch Cloud Source IDs and Checksums (Fast Deduplication)
+      print('BackupService: Fetching existing metadata from cloud...');
       final cloudSourceIDs = await _fetchCloudSourceIDs(userId);
-      print('BackupService: Found ${cloudSourceIDs.length} existing items in cloud.');
+      final cloudChecksums = await _fetchCloudChecksums(userId);
+      print('BackupService: Found ${cloudSourceIDs.length} source IDs and ${cloudChecksums.length} checksums in cloud.');
 
       // 3. Fetch Assets from selected albums
       if (_selectedAlbumIds.isEmpty) {
@@ -116,6 +136,7 @@ class BackupService {
       }
 
       final Set<String> processedAssetIds = {};
+      final Map<String, String> assetToAlbumName = {};
       final List<AssetEntity> assetsToBackup = [];
 
       final allAlbums = await PhotoManager.getAssetPathList(type: RequestType.common);
@@ -126,7 +147,6 @@ class BackupService {
              final album = allAlbums.firstWhere((a) => a.id == albumId);
              final count = await album.assetCountAsync;
              
-             // Check all pages
              for (int page = 0; page < (count / 50).ceil(); page++) {
                 if (!_isBackupEnabled) break;
                 final batch = await album.getAssetListPaged(page: page, size: 50);
@@ -136,9 +156,10 @@ class BackupService {
                    
                    final file = await asset.file;
                    if (file == null) continue;
-                   if (await _db.isBackedUp(file.path)) continue; // Skip if done
+                   if (await _db.isBackedUp(file.path)) continue;
                    
                    assetsToBackup.add(asset);
+                   assetToAlbumName[asset.id] = album.name;
                 }
              }
           } catch (e) {
@@ -156,7 +177,10 @@ class BackupService {
          final end = (i + concurrency < assetsToBackup.length) ? i + concurrency : assetsToBackup.length;
          final batch = assetsToBackup.sublist(i, end);
          
-         await Future.wait(batch.map((asset) => _processSingleAsset(asset, userId, key, cloudSourceIDs)));
+         await Future.wait(batch.map((asset) {
+           final albumName = assetToAlbumName[asset.id];
+           return _processSingleAsset(asset, userId, key, cloudSourceIDs, cloudChecksums, albumName: albumName);
+         }));
          
          // Give UI loop a breather
          await Future.delayed(Duration.zero);
@@ -170,7 +194,7 @@ class BackupService {
     }
   }
 
-  Future<void> _processSingleAsset(AssetEntity asset, String userId, SecureKey masterKey, Set<String> cloudSourceIDs) async {
+  Future<void> _processSingleAsset(AssetEntity asset, String userId, SecureKey masterKey, Set<String> cloudSourceIDs, Set<String> cloudChecksums, {String? albumName}) async {
     try {
       final file = await asset.file;
       if (file == null) {
@@ -185,12 +209,21 @@ class BackupService {
         return;
       }
       
-      print('BackupService: Processing ${file.path}...');
-
-      // 2. Generate ID and Checksum (Only for new files)
-      final imageId = _generateUUID();
+      // 2. Generate Checksum and Check Deduplication
       final fileBytes = await file.readAsBytes();
       final checksum = _calculateChecksum(fileBytes);
+      
+      if (cloudChecksums.contains(checksum)) {
+        print('BackupService: Skipping ${file.path} (Already on Cloud by Checksum)');
+        await _db.logBackupStatus(file.path, 'UPLOADED');
+        // We might want to register this image with the new source_id too, but for simplicity we just skip
+        return;
+      }
+
+      print('BackupService: Processing ${file.path}...');
+
+      // 3. Generate ID (Only for new files)
+      final imageId = _generateUUID();
       print('BackupService: Generated ID $imageId, Checksum $checksum');
       
       // 3. Generate Thumbnails
@@ -240,6 +273,7 @@ class BackupService {
         checksum: checksum,
         width: asset.width,
         height: asset.height,
+        albumName: albumName,
       );
 
       // 7. Mark Locally
@@ -255,6 +289,22 @@ class BackupService {
       print('BackupService Asset Error (${asset.id}): $e');
       print(stack);
     }
+  }
+
+  Future<Set<String>> _fetchCloudChecksums(String userId) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/images/checksums?user_id=$userId');
+      final response = await http.get(uri);
+      
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        final list = List<String>.from(json['checksums']);
+        return list.toSet();
+      }
+    } catch (e) {
+      print('BackupService: Error fetching cloud checksums: $e');
+    }
+    return <String>{};
   }
 
   Future<Set<String>> _fetchCloudSourceIDs(String userId) async {
@@ -302,19 +352,10 @@ class BackupService {
 
   Future<bool> _encryptAndUpload(String url, Uint8List data, SecureKey masterKey, String variant) async {
     try {
-      Uri uri = Uri.parse(url);
-      final String originalAuthority = uri.authority; // e.g., 127.0.0.1:9000
+      final uri = _resolveUri(url);
+      final String originalAuthority = Uri.parse(url).authority;
       
-      if (kIsWeb) {
-        final host = Uri.base.host;
-        if (host.isNotEmpty && host != 'localhost' && host != '127.0.0.1' && (uri.host == '127.0.0.1' || uri.host == 'localhost')) {
-          uri = uri.replace(host: host);
-        }
-      } else if (!kIsWeb && Platform.isAndroid && (uri.host == '127.0.0.1' || uri.host == 'localhost')) {
-         uri = uri.replace(host: '192.168.18.11'); 
-      }
-
-      print('BackupService: Encrypting and uploading $variant (${data.length} bytes) to ${uri.host}:${uri.port} (Host: $originalAuthority)...');
+      print('BackupService: Encrypting and uploading $variant (${data.length} bytes) to ${uri.host}:${uri.port} (Header Host: $originalAuthority)...');
       // Encrypt
       final result = _crypto.encrypt(data, masterKey);
       
@@ -332,7 +373,7 @@ class BackupService {
           'Host': originalAuthority, // Critical for MinIO signature validation
         },
         body: encryptedBytes,
-      );
+      ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
         print('BackupService: Upload success for $variant');
@@ -411,6 +452,9 @@ class BackupService {
     final masterKeyBytes = session['masterKey'] as Uint8List;
     final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
 
+    // Fetch existing checksums for manual deduplication
+    final cloudChecksums = await _fetchCloudChecksums(userId);
+
     for (var file in files) {
       try {
         final Uint8List? fileBytes = file.bytes ?? (file.path != null ? await File(file.path!).readAsBytes() : null);
@@ -419,8 +463,13 @@ class BackupService {
           continue;
         }
 
-        final imageId = _generateUUID();
         final checksum = _calculateChecksum(fileBytes);
+        if (cloudChecksums.contains(checksum)) {
+           print('BackupService: Skipping manual file ${file.name} (Already on Cloud by Checksum)');
+           continue;
+        }
+
+        final imageId = _generateUUID();
 
         // Try to decode image to fetch sizes and create thumbnails naturally
         final decodedImage = img.decodeImage(fileBytes);
@@ -539,6 +588,22 @@ class BackupService {
     }
   }
 
+  Future<RemoteSyncResponse?> syncImages(String userId, String modifiedAfter) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/sync?user_id=$userId&modified_after=${Uri.encodeComponent(modifiedAfter)}');
+      final response = await http.get(uri);
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        return RemoteSyncResponse.fromJson(json);
+      }
+      return null;
+    } catch (e) {
+      print('SyncImages Error: $e');
+      return null;
+    }
+  }
+
   Future<List<Map<String, dynamic>>> fetchAlbums(String userId) async {
     try {
       final uri = Uri.parse('$_baseUrl/albums?user_id=$userId');
@@ -558,8 +623,15 @@ class BackupService {
 
   Future<Uint8List?> fetchAndDecryptFromUrl(String url, SecureKey masterKey) async {
     try {
-      Uri uri = Uri.parse(url);
-      final response = await http.get(uri).timeout(const Duration(seconds: 120));
+      final uri = _resolveUri(url);
+      final String originalAuthority = Uri.parse(url).authority;
+
+      final response = await http.get(
+        uri,
+        headers: {
+          'Host': originalAuthority, // Critical for MinIO signature validation
+        },
+      ).timeout(const Duration(seconds: 120));
       
       if (response.statusCode != 200) {
         print('FetchImage Error: Status ${response.statusCode} for $url');

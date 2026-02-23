@@ -10,8 +10,10 @@ class ModelService {
   // Use 10.0.2.2 for Android Emulator to access host's localhost.
   // For physical devices, use your computer's LAN IP (e.g., 192.168.x.x).
   static String get _baseUrl {
+    if (Platform.isWindows) {
+      return 'http://localhost:8080';
+    }
     if (Platform.isAndroid) {
-      // User's specific LAN IP for physical device or emulator access
       return 'http://192.168.18.11:8080';
     }
     return 'http://localhost:8080';

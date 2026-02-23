@@ -28,6 +28,9 @@ class AuthService {
       }
       return 'http://localhost:8080';
     }
+    if (!kIsWeb && Platform.isWindows) {
+      return 'http://localhost:8080';
+    }
     if (!kIsWeb && Platform.isAndroid) {
       return 'http://192.168.18.11:8080';
     }

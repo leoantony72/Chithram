@@ -11,6 +11,8 @@ import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:extended_image/extended_image.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' as latlong;
 import '../../providers/photo_provider.dart';
 import '../../models/gallery_item.dart';
 import '../widgets/video_viewer.dart';
@@ -18,9 +20,10 @@ import '../widgets/photo_viewer.dart';
 import '../widgets/remote_photo_viewer.dart';
 
 class AssetViewerPage extends StatefulWidget {
-  final GalleryItem item; // Changed from AssetEntity
+  final GalleryItem item; 
+  final List<GalleryItem>? items;
 
-  const AssetViewerPage({super.key, required this.item});
+  const AssetViewerPage({super.key, required this.item, this.items});
 
   @override
   State<AssetViewerPage> createState() => _AssetViewerPageState();
@@ -41,8 +44,12 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_isInit) {
-      final provider = Provider.of<PhotoProvider>(context, listen: false);
-      _items = provider.allItems; // Use unified list
+      if (widget.items != null) {
+        _items = widget.items!;
+      } else {
+        final provider = Provider.of<PhotoProvider>(context, listen: false);
+        _items = provider.allItems; // Use unified list
+      }
       
       // Find initial index
       final index = _items.indexWhere((e) => e.id == widget.item.id);
@@ -295,6 +302,10 @@ class _DetailsSheet extends StatefulWidget {
 class _DetailsSheetState extends State<_DetailsSheet> {
   String? _filePath;
   int? _fileSize;
+  int? _width;
+  int? _height;
+  latlong.LatLng? _location;
+  String? _album;
   bool _loading = true;
 
   @override
@@ -304,23 +315,41 @@ class _DetailsSheetState extends State<_DetailsSheet> {
   }
 
   Future<void> _loadDetails() async {
-    if (widget.item.type == GalleryItemType.local) {
-      final asset = widget.item.local!;
+    final item = widget.item;
+    if (item.type == GalleryItemType.local) {
+      final asset = item.local!;
       final file = await asset.file;
-      if (file != null) {
-        final size = await file.length();
-        if (mounted) {
-          setState(() {
-            _filePath = file.path;
-            _fileSize = size;
-            _loading = false;
-          });
-        }
-      } else {
-         if (mounted) setState(() => _loading = false);
+      final latlng = await asset.latlngAsync();
+      final double? lat = latlng?.latitude;
+      final double? lng = latlng?.longitude;
+      
+      if (mounted) {
+        setState(() {
+          _filePath = file?.path;
+          _fileSize = file != null ? file.lengthSync() : 0;
+          _width = asset.width;
+          _height = asset.height;
+          if (lat != null && lng != null && (lat != 0 || lng != 0)) {
+            _location = latlong.LatLng(lat, lng);
+          }
+          _album = "Local Album"; // AssetEntity doesn't easily expose parent path name here without extra lookup
+          _loading = false;
+        });
       }
     } else {
-        if (mounted) setState(() => _loading = false);
+      final remote = item.remote!;
+      if (mounted) {
+        setState(() {
+          _fileSize = remote.size;
+          _width = remote.width;
+          _height = remote.height;
+          if (remote.latitude != 0 || remote.longitude != 0) {
+            _location = latlong.LatLng(remote.latitude, remote.longitude);
+          }
+          _album = remote.album;
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -334,83 +363,223 @@ class _DetailsSheetState extends State<_DetailsSheet> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
-    final isLocal = item.type == GalleryItemType.local;
-    final asset = item.local;
 
     return Container(
-      padding: const EdgeInsets.all(16.0),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
       ),
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white24,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Row(
+              children: [
+                const Text(
+                  "Information",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: -0.5,
+                  ),
                 ),
+                const Spacer(),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (_loading)
+                    const Center(child: Padding(
+                      padding: EdgeInsets.all(40.0),
+                      child: CircularProgressIndicator(color: Colors.white70),
+                    ))
+                  else ...[
+                    // Date and Time Section
+                    _buildSectionHeader("DATE & TIME"),
+                    _buildDetailItem(
+                      icon: Icons.calendar_today_rounded,
+                      title: DateFormat('EEEE, d MMMM yyyy').format(item.date),
+                      subtitle: DateFormat('HH:mm').format(item.date),
+                    ),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // File details Section
+                    _buildSectionHeader("FILE DETAILS"),
+                    _buildDetailItem(
+                      icon: Icons.image_rounded,
+                      title: item.type == GalleryItemType.local ? (item.local?.title ?? "Unknown") : "Cloud Image",
+                      subtitle: "${_width ?? 0} x ${_height ?? 0} • ${_fileSize != null ? _formatBytes(_fileSize!) : 'Unknown size'}",
+                    ),
+                    if (_album != null && _album!.isNotEmpty)
+                      _buildDetailItem(
+                        icon: Icons.folder_open_rounded,
+                        title: _album!,
+                        subtitle: "Album",
+                      ),
+                    if (_filePath != null)
+                      _buildDetailItem(
+                        icon: Icons.description_rounded,
+                        title: _filePath!.split('/').last,
+                        subtitle: _filePath!,
+                      ),
+
+                    const SizedBox(height: 24),
+
+                    // Location Section
+                    if (_location != null) ...[
+                      _buildSectionHeader("LOCATION"),
+                      const SizedBox(height: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          height: 180,
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: FlutterMap(
+                            options: MapOptions(
+                              initialCenter: _location!,
+                              initialZoom: 13,
+                              interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
+                            ),
+                            children: [
+                              TileLayer(
+                                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                userAgentPackageName: 'com.ninta.app',
+                                tileDisplay: const TileDisplay.fadeIn(),
+                                // Dark mode filter for map
+                                tileBuilder: (context, tileWidget, tile) {
+                                  return ColorFiltered(
+                                    colorFilter: const ColorFilter.matrix([
+                                      -1.0, 0.0, 0.0, 0.0, 255.0,
+                                      0.0, -1.0, 0.0, 0.0, 255.0,
+                                      0.0, 0.0, -1.0, 0.0, 255.0,
+                                      0.0, 0.0, 0.0, 1.0, 0.0,
+                                    ]),
+                                    child: tileWidget,
+                                  );
+                                },
+                              ),
+                              MarkerLayer(
+                                markers: [
+                                  Marker(
+                                    point: _location!,
+                                    width: 40,
+                                    height: 40,
+                                    child: const Icon(Icons.location_on, color: Colors.blue, size: 40),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        "${_location!.latitude.toStringAsFixed(6)}, ${_location!.longitude.toStringAsFixed(6)}",
+                        style: const TextStyle(color: Colors.white54, fontSize: 13),
+                      ),
+                    ],
+                  ],
+                ],
               ),
             ),
-            const Text(
-              "Details",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            if (_loading) 
-               const Center(child: CircularProgressIndicator())
-            else ...[
-               _buildDetailRow(Icons.image, "Name", asset?.title ?? "Unknown"),
-               const Divider(),
-               _buildDetailRow(Icons.calendar_today, "Date", DateFormat('d MMM yyyy, HH:mm').format(item.date)),
-               const Divider(),
-               if (isLocal) ...[
-                  _buildDetailRow(Icons.photo_size_select_actual, "Resolution", "${asset?.width} x ${asset?.height}"),
-                  const Divider(),
-                  _buildDetailRow(Icons.sd_storage, "Size", _fileSize != null ? _formatBytes(_fileSize!) : "Unknown"),
-                  const Divider(),
-                  _buildDetailRow(Icons.folder, "Path", _filePath ?? "Unknown"),
-                  const Divider(),
-               ],
-               // Placeholder for EXIF data
-               _buildDetailRow(Icons.iso, "ISO", "Unknown"), // Requires EXIF package
-               const Divider(),
-               _buildDetailRow(Icons.shutter_speed, "Shutter Speed", "Unknown"), // Requires EXIF package
-            ],
-            const SizedBox(height: 16),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12, top: 4),
+      child: Text(
+        title,
+        style: TextStyle(
+          color: Colors.white.withOpacity(0.3),
+          fontSize: 11,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 1.2,
         ),
       ),
     );
   }
 
-  Widget _buildDetailRow(IconData icon, String label, String value) {
-     return Padding(
-       padding: const EdgeInsets.symmetric(vertical: 8.0),
-       child: Row(
-         crossAxisAlignment: CrossAxisAlignment.start,
-         children: [
-           Icon(icon, color: Colors.grey[600], size: 20),
-           const SizedBox(width: 16),
-           Expanded(
-             child: Column(
-               crossAxisAlignment: CrossAxisAlignment.start,
-               children: [
-                 Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-                 const SizedBox(height: 4),
-                 Text(value, style: const TextStyle(fontSize: 14)),
-               ],
-             ),
-           ),
-         ],
-       ),
-     );
+  Widget _buildDetailItem({required IconData icon, required String title, required String subtitle}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.05),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: Colors.white70, size: 20),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.4),
+                    fontSize: 13,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

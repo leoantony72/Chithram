@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
+import 'package:go_router/go_router.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:intl/intl.dart';
 import 'package:collection/collection.dart';
@@ -165,6 +166,13 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
                                   entity: item.local!,
                                   isFastScrolling: _isFastScrolling, 
                                   heroTagPrefix: 'album_details_${widget.album.id}',
+                                  onTap: () {
+                                     final allItemsInAlbum = _groupedAssets.expand((g) => g.items).toList();
+                                     context.push('/viewer', extra: {
+                                        'item': item,
+                                        'items': allItemsInAlbum,
+                                     });
+                                  },
                                 );
                               }
                               return const SizedBox.shrink();

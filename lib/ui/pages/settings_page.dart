@@ -28,10 +28,12 @@ class _SettingsPageState extends State<SettingsPage> {
       // 1. Init Backup Service (loads settings)
       await _backupService.init();
       
-      // 2. Load Albums
-      final permission = await PhotoManager.requestPermissionExtend();
-      if (permission.isAuth) {
-        _allAlbums = await PhotoManager.getAssetPathList(type: RequestType.common);
+      // 2. Load Albums (Only on mobile platforms where photo_manager is supported for local assets)
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        final permission = await PhotoManager.requestPermissionExtend();
+        if (permission.isAuth) {
+          _allAlbums = await PhotoManager.getAssetPathList(type: RequestType.common);
+        }
       }
     } catch (e) {
       debugPrint("Error loading settings data: $e");

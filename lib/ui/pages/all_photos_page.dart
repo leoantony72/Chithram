@@ -40,9 +40,6 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   Alignment _scaleAlignment = Alignment.center;
   Offset _lastFocalPoint = Offset.zero;
 
-  List<Map<String, dynamic>> _cloudAlbums = [];
-  bool _isLoadingAlbums = true;
-
   @override
   void initState() {
     super.initState();
@@ -55,28 +52,10 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
       final provider = Provider.of<PhotoProvider>(context, listen: false);
       if (!provider.hasPermission) {
         provider.checkPermission();
+      } else {
+        provider.fetchRemotePhotos();
       }
     });
-
-    _fetchAlbums();
-  }
-
-  Future<void> _fetchAlbums() async {
-      final session = await AuthService().loadSession();
-      if (session != null) {
-          final userId = session['username'] as String;
-          final albums = await BackupService().fetchAlbums(userId);
-          if (mounted) {
-              setState(() {
-                  _cloudAlbums = albums;
-                  _isLoadingAlbums = false;
-              });
-          }
-      } else {
-          if (mounted) {
-              setState(() => _isLoadingAlbums = false);
-          }
-      }
   }
 
   Future<void> _handleUpload() async {
@@ -114,13 +93,13 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                                       Text('${result.files.length} photo${result.files.length > 1 ? 's' : ''} selected', style: const TextStyle(color: Colors.white54, fontSize: 14)),
                                       const SizedBox(height: 32),
 
-                                      if (_cloudAlbums.isNotEmpty) ...[
+                                      if (Provider.of<PhotoProvider>(context, listen: false).remoteAlbums.isNotEmpty) ...[
                                          const Text('EXISTING ALBUMS', style: TextStyle(color: Colors.white30, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2)),
                                          const SizedBox(height: 12),
                                          Wrap(
                                             spacing: 8,
                                             runSpacing: 8,
-                                            children: _cloudAlbums.map((aObj) {
+                                            children: Provider.of<PhotoProvider>(context, listen: false).remoteAlbums.map((aObj) {
                                                 final a = aObj['name'] as String;
                                                 final bool isSelected = selectedAlbum == a;
                                                 return GestureDetector(
@@ -206,9 +185,9 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
           if (selectedAlbum.isNotEmpty) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Uploading ${result.files.length} files...')));
               await BackupService().uploadManualFiles(result.files, selectedAlbum);
-              _fetchAlbums(); 
               if (mounted) {
-                 Provider.of<PhotoProvider>(context, listen: false).fetchRemotePhotos();
+                 final provider = Provider.of<PhotoProvider>(context, listen: false);
+                 await provider.fetchRemotePhotos();
               }
           }
       }
@@ -431,10 +410,12 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
     }
   }
 
-  Widget _buildAlbumsRow() {
+  Widget _buildAlbumsRow(PhotoProvider provider) {
      final bool isWide = MediaQuery.of(context).size.width > 600;
      if (!isWide && !kIsWeb) return const SizedBox.shrink();
-     if (_isLoadingAlbums) return const SizedBox.shrink();
+     if (provider.isLoading && provider.remoteAlbums.isEmpty) return const SizedBox.shrink();
+
+     final albums = provider.remoteAlbums;
 
      return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -445,7 +426,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
            ),
            SizedBox(
              height: 90,
-             child: _cloudAlbums.isEmpty
+             child: albums.isEmpty
                  ? Padding(
                      padding: const EdgeInsets.symmetric(horizontal: 24.0),
                      child: Container(
@@ -453,15 +434,15 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                         decoration: BoxDecoration(
                            color: Colors.transparent,
                            borderRadius: BorderRadius.circular(8),
-                           border: Border.all(color: Colors.white24, width: 2), // Mock Dotted Outline
+                           border: Border.all(color: Colors.white24, width: 1.5), // Mock Dotted Outline
                         ),
                         child: const Center(
                            child: Column(
                                mainAxisSize: MainAxisSize.min,
                                children: [
-                                  Icon(Icons.add_photo_alternate, color: Colors.white54),
-                                  SizedBox(height: 4),
-                                  Text('Create an album', style: TextStyle(color: Colors.white54, fontSize: 12))
+                                  Icon(Icons.add_photo_alternate_outlined, color: Colors.white38, size: 20),
+                                  SizedBox(height: 6),
+                                  Text('Create an album', style: TextStyle(color: Colors.white38, fontSize: 11, fontWeight: FontWeight.w500))
                                ]
                            )
                         ),
@@ -470,10 +451,10 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                  : ListView.separated(
                     padding: const EdgeInsets.symmetric(horizontal: 24.0),
                     scrollDirection: Axis.horizontal,
-                    itemCount: _cloudAlbums.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemCount: albums.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 12),
                     itemBuilder: (context, i) {
-                       final albumObj = _cloudAlbums[i];
+                       final albumObj = albums[i];
                        final albumName = albumObj['name'] as String;
                        final thumbUrl = albumObj['cover_image_url'] as String? ?? '';
 
@@ -614,23 +595,34 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                 ),
               ),
               actions: [
-                if (kIsWeb || (!kIsWeb && !Platform.isAndroid))
+                if (kIsWeb || (!kIsWeb && !Platform.isAndroid)) ...[
                   Padding(
-                    padding: const EdgeInsets.only(right: 16.0),
-                  child: Center(
-                    child: OutlinedButton.icon(
-                      onPressed: _handleUpload,
-                      icon: const Icon(Icons.upload_rounded, size: 18, color: Colors.white),
-                      label: const Text('Upload', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Colors.white24),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
-                        backgroundColor: Colors.white.withOpacity(0.05),
+                    padding: const EdgeInsets.only(right: 8.0),
+                    child: Center(
+                      child: IconButton(
+                        onPressed: () => context.read<PhotoProvider>().refresh(),
+                        icon: const Icon(Icons.refresh_rounded, color: Colors.white70, size: 22),
+                        tooltip: 'Refresh cloud data',
                       ),
                     ),
                   ),
-                ),
+                  Padding(
+                    padding: const EdgeInsets.only(right: 16.0),
+                    child: Center(
+                      child: OutlinedButton.icon(
+                        onPressed: _handleUpload,
+                        icon: const Icon(Icons.upload_rounded, size: 18, color: Colors.white),
+                        label: const Text('Upload', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.white24),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                          backgroundColor: Colors.white.withOpacity(0.05),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ],
             );
           },
@@ -671,61 +663,66 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
             onScaleStart: _onScaleStart,
             onScaleUpdate: _onScaleUpdate,
             onScaleEnd: _onScaleEnd,
-            child: DraggableScrollIcon(
-              controller: _scrollController,
-              backgroundColor: Colors.grey[900]!.withOpacity(0.8),
-              onDragStart: () => _isFastScrolling.value = true,
-              onDragEnd: () => _isFastScrolling.value = false,
-              child: CustomScrollView(
-                  controller: _scrollController,
-                  physics: const BouncingScrollPhysics(),
-                  slivers: [
-                    SliverToBoxAdapter(
-                      child: _buildAlbumsRow(),
-                    ),
-                    SliverToBoxAdapter(
-                      child: _buildAllHeader(provider.allAssets.length + provider.remoteImages.length),
-                    ),
-                    for (var group in groups) ...[
-                      SliverPersistentHeader(
-                        pinned: false,
-                        delegate: SectionHeaderDelegate(
-                          title: _formatDate(group.date, _groupMode),
-                        ),
+            child: RefreshIndicator(
+              onRefresh: () => provider.refresh(),
+              color: Colors.white,
+              backgroundColor: Colors.grey[900],
+              child: DraggableScrollIcon(
+                controller: _scrollController,
+                backgroundColor: Colors.grey[900]!.withOpacity(0.8),
+                onDragStart: () => _isFastScrolling.value = true,
+                onDragEnd: () => _isFastScrolling.value = false,
+                child: CustomScrollView(
+                    controller: _scrollController,
+                    physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+                    slivers: [
+                      SliverToBoxAdapter(
+                        child: _buildAlbumsRow(provider),
                       ),
-                      SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                        sliver: SliverGrid(
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: crossAxisCount,
-                            crossAxisSpacing: 4,
-                            mainAxisSpacing: 4,
+                      SliverToBoxAdapter(
+                        child: _buildAllHeader(provider.allAssets.length + provider.remoteImages.length),
+                      ),
+                      for (var group in groups) ...[
+                        SliverPersistentHeader(
+                          pinned: false,
+                          delegate: SectionHeaderDelegate(
+                            title: _formatDate(group.date, _groupMode),
                           ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, index) {
-                            final GalleryItem item = group.items[index];
-                            if (item.type == GalleryItemType.local) {
-                               return ThumbnailWidget(
-                                 entity: item.local!,
-                                 isFastScrolling: _isFastScrolling,
-                                 heroTagPrefix: 'all_photos',
-                               );
-                            } else {
-                               return RemoteThumbnailWidget(
-                                  image: item.remote! 
-                                  // No fast scrolling optimized signal passed yet, but loads async
-                                  // RemoteThumbnailWidget handles loading state
-                               );
-                            }
-                          },
-                          childCount: group.items.length,
                         ),
-                      ),
-                     ),
-                    ]
-                  ],
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                          sliver: SliverGrid(
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: crossAxisCount,
+                              crossAxisSpacing: 4,
+                              mainAxisSpacing: 4,
+                            ),
+                          delegate: SliverChildBuilderDelegate(
+                            (context, index) {
+                              final GalleryItem item = group.items[index];
+                              if (item.type == GalleryItemType.local) {
+                                 return ThumbnailWidget(
+                                   entity: item.local!,
+                                   isFastScrolling: _isFastScrolling,
+                                   heroTagPrefix: 'all_photos',
+                                 );
+                              } else {
+                                 return RemoteThumbnailWidget(
+                                    image: item.remote! 
+                                    // No fast scrolling optimized signal passed yet, but loads async
+                                    // RemoteThumbnailWidget handles loading state
+                                 );
+                              }
+                            },
+                            childCount: group.items.length,
+                          ),
+                        ),
+                       ),
+                      ]
+                    ],
+                  ),
                 ),
-              ),
+            ),
             );
           },
       ),

@@ -4,6 +4,9 @@ class RemoteImage {
   final String album;
   final int width;
   final int height;
+  final int size;
+  final double latitude;
+  final double longitude;
   final String originalUrl;
   final String thumb256Url;
   final String thumb64Url;
@@ -16,6 +19,9 @@ class RemoteImage {
     this.album = '',
     required this.width,
     required this.height,
+    this.size = 0,
+    this.latitude = 0,
+    this.longitude = 0,
     required this.originalUrl,
     required this.thumb256Url,
     required this.thumb64Url,
@@ -30,6 +36,9 @@ class RemoteImage {
       album: json['album'] ?? '',
       width: json['width'] ?? 0,
       height: json['height'] ?? 0,
+      size: json['size'] ?? 0,
+      latitude: (json['latitude'] ?? 0).toDouble(),
+      longitude: (json['longitude'] ?? 0).toDouble(),
       originalUrl: json['original_url'] ?? '',
       thumb256Url: json['thumb_256_url'] ?? '',
       thumb64Url: json['thumb_64_url'] ?? '',
@@ -52,6 +61,21 @@ class RemoteImageResponse {
     final images = list.map((e) => RemoteImage.fromJson(e)).toList();
     return RemoteImageResponse(
       images: images,
+      nextCursor: json['next_cursor'],
+    );
+  }
+}
+class RemoteSyncResponse {
+  final List<RemoteImage> updates;
+  final String? nextCursor;
+
+  RemoteSyncResponse({required this.updates, this.nextCursor});
+
+  factory RemoteSyncResponse.fromJson(Map<String, dynamic> json) {
+    final list = json['updates'] as List? ?? [];
+    final images = list.map((e) => RemoteImage.fromJson(e)).toList();
+    return RemoteSyncResponse(
+      updates: images,
       nextCursor: json['next_cursor'],
     );
   }

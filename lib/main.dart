@@ -79,6 +79,11 @@ final GoRouter _router = GoRouter(
         final extra = state.extra;
         if (extra is GalleryItem) {
           return AssetViewerPage(item: extra);
+        } else if (extra is Map<String, dynamic>) {
+          return AssetViewerPage(
+            item: extra['item'] as GalleryItem,
+            items: extra['items'] as List<GalleryItem>?,
+          );
         } else if (extra is AssetEntity) {
           // Fallback for existing calls
           return AssetViewerPage(item: GalleryItem.local(extra));
