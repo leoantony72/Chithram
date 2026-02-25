@@ -5,19 +5,11 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'api_config.dart';
 
 class ModelService {
-  // Use 10.0.2.2 for Android Emulator to access host's localhost.
-  // For physical devices, use your computer's LAN IP (e.g., 192.168.x.x).
-  static String get _baseUrl {
-    if (Platform.isWindows) {
-      return 'http://localhost:8080';
-    }
-    if (Platform.isAndroid) {
-      return 'http://192.168.18.11:8080';
-    }
-    return 'http://localhost:8080';
-  }
+  // Base URL is dynamically managed
+  static String get _baseUrl => ApiConfig().baseUrl;
 
   static const String faceDetectionModelName = 'face-detection';
   static const String faceRecognitionModelName = 'face-recognition';
@@ -40,7 +32,7 @@ class ModelService {
 
     String? remoteVersion;
     final response = await http.get(Uri.parse('$_baseUrl/models/$modelName/info'))
-        .timeout(const Duration(seconds: 3));
+        .timeout(const Duration(seconds: 10));
     
     if (response.statusCode == 200) {
       final info = jsonDecode(response.body);
@@ -58,7 +50,7 @@ class ModelService {
     print('Downloading model $modelName...');
     try {
       final downloadResponse = await http.get(Uri.parse('$_baseUrl/models/$modelName/download'))
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 30));
 
       if (downloadResponse.statusCode == 200) {
         await file.writeAsBytes(downloadResponse.bodyBytes);

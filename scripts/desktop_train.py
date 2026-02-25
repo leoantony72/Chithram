@@ -64,7 +64,8 @@ class NTXentLoss(nn.Module):
         nominator = torch.exp(positives)
         denominator = mask * torch.exp(sim)
         
-        loss = -torch.log(nominator / torch.sum(denominator, dim=1))
+        # Add epsilon to prevent log(0)
+        loss = -torch.log(nominator / (torch.sum(denominator, dim=1) + 1e-8))
         return torch.mean(loss)
 
 # ----- Datasets (Reading localized SQLite photos directly) -----
@@ -133,17 +134,20 @@ class FederatedLocalFacesDataset(Dataset):
     def __getitem__(self, idx):
         face_id, img_path, bbox_str = self.rows[idx]
         
-        load_path = img_path
-        if img_path.startswith('cloud_') and self.cache_dir:
+        # Check for cached cloud images
+        if self.cache_dir and img_path.startswith('cloud_'):
             image_id = img_path[6:]
-            load_path = os.path.join(self.cache_dir, f"{image_id}.jpg")
+            cached_path = os.path.join(self.cache_dir, f"{image_id}.jpg")
+            if os.path.exists(cached_path):
+                img_path = cached_path
 
-        img = cv2.imread(load_path)
+        img = cv2.imread(img_path)
         
         if img is None:
-            # Fallback for missing local files or cache misses
-            print(f"Warning: Could not read image at {load_path}")
-            return torch.zeros(3, self.img_size[0], self.img_size[1]), torch.zeros(3, self.img_size[0], self.img_size[1])
+            # Return dummy black image if file is completely missing
+            dummy = torch.zeros(3, self.img_size[0], self.img_size[1])
+            print(f"Warning: Could not read image at {img_path}. Returning dummy.")
+            return dummy, dummy
         else:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             try:
@@ -251,13 +255,16 @@ def train_local_ssl(model_path, output_path, db_path, cache_dir=None, epochs=1):
 
     print(f"STATUS: Starting Genuine Self-Supervised Edge Training on {len(dataset)} valid local image patches.")
     
+    accumulation_steps = 4
     for epoch in range(epochs):
         epoch_loss = 0.0
+        z1_list = []
+        z2_list = []
+        optimizer.zero_grad()
         for i, (view1, view2) in enumerate(dataloader):
             # Format progress for Flutter UI
             print(f"PROGRESS: {i+1}/{len(dataloader)}")
             view1, view2 = view1.to(device), view2.to(device)
-            optimizer.zero_grad()
             
             try:
                 # YOLOv8 often outputs a list of feature maps or flattened detections
@@ -265,31 +272,48 @@ def train_local_ssl(model_path, output_path, db_path, cache_dir=None, epochs=1):
                 out2 = pytorch_model(view2)
                 
                 # Robust output processing for varied architectures (Detection vs Recognition)
+                # Robust output processing for varied architectures
                 def get_pooled_out(model_out):
                     if isinstance(model_out, (tuple, list)):
-                        # If multi-head, flatten and cat all heads
                         parts = []
                         for o in model_out:
-                            if isinstance(o, torch.Tensor):
-                                # Global average pool if spatial, else just flatten
-                                if len(o.shape) == 4:
-                                    parts.append(torch.mean(o, dim=(2, 3)))
+                            if isinstance(o, torch.Tensor) and o.numel() > 0:
+                                # Keep gradients, flatten spatial dims
+                                if len(o.shape) >= 3:
+                                    parts.append(o.view(o.size(0), -1).mean(dim=1, keepdim=True))
                                 else:
-                                    parts.append(o.reshape(o.size(0), -1))
-                        return torch.cat(parts, dim=1) if len(parts) > 1 else parts[0]
+                                    parts.append(o.view(o.size(0), -1))
+                        if not parts:
+                            raise RuntimeError("All output tensors were empty")
+                        return torch.cat(parts, dim=1)
                     else:
-                        if len(model_out.shape) == 4:
-                            return torch.mean(model_out, dim=(2, 3))
-                        return model_out.reshape(model_out.size(0), -1)
+                        if len(model_out.shape) >= 3:
+                            return model_out.view(model_out.size(0), -1).mean(dim=1, keepdim=True)
+                        return model_out.view(model_out.size(0), -1)
 
                 z1 = get_pooled_out(out1)
                 z2 = get_pooled_out(out2)
                 
-                loss = criterion(z1, z2)
-                loss.backward()
-                optimizer.step()
+                z1_list.append(z1)
+                z2_list.append(z2)
                 
-                epoch_loss += loss.item()
+                if len(z1_list) == accumulation_steps or i == len(dataloader) - 1:
+                    if len(z1_list) > 1:
+                        z1_batch = torch.cat(z1_list, dim=0)
+                        z2_batch = torch.cat(z2_list, dim=0)
+                        
+                        loss = criterion(z1_batch, z2_batch)
+                        
+                        print(f"DEBUG: z1 shape: {z1_batch.shape}, z2 shape: {z2_batch.shape}, loss: {loss.item()}")
+                        
+                        loss.backward()
+                        optimizer.step()
+                        optimizer.zero_grad()
+                        
+                        epoch_loss += loss.item()
+                        
+                    z1_list = []
+                    z2_list = []
             except Exception as e:
                 # Provide better debug info for shape mismatches
                 if 'out1' in locals():
@@ -298,82 +322,36 @@ def train_local_ssl(model_path, output_path, db_path, cache_dir=None, epochs=1):
                     else:
                         shapes = out1.shape
                     print(f"DEBUG: Model Output Shapes: {shapes}")
-                print(f"Math pass failed for generic architecture: {e}")
-                break
+                print(f"CRITICAL: Math pass failed for generic architecture: {e}")
+                sys.exit(1)
                 
-        if epoch_loss != 0:
-            print(f"STATUS: Epoch [{epoch+1}/{epochs}] complete. Average Loss: {epoch_loss/len(dataloader):.4f}")
-            # Mark these images as trained so we don't duplicate effort next time
-            dataset.mark_all_trained()
+        if epoch_loss == 0.0:
+            print("CRITICAL: Epoch loss was 0.0. Training silently failed or skipped batches.")
+            sys.exit(1)
+            
+        avg_loss = epoch_loss / max(1, len(dataloader) // accumulation_steps)
+        print(f"STATUS: Epoch [{epoch+1}/{epochs}] complete. Average Pseudo-Batch Loss: {avg_loss:.4f}")
+        # Mark these images as trained so we don't duplicate effort next time
+        dataset.mark_all_trained()
     
     dataset.close()
 
-    # 4. Save and Back-Translate
-    print(f"STATUS: Self-Supervised Local training loop complete. Injecting weights into ONNX...")
+    # 4. Save State Dict directly
+    print(f"STATUS: Self-Supervised Local training loop complete. Saving optimized weights...")
     pytorch_model.eval()
     
     try:
-        # Load the original ONNX model to use as a template
-        base_onnx = onnx.load(model_path)
-        state_dict = pytorch_model.state_dict()
-        
-        # Helper to normalize names for matching
-        def normalize_name(name):
-            # 1. Standardize separators
-            n = name.replace('/', '.').strip('.')
-            # 2. Remove common prefixes
-            if n.startswith('model.'): n = n[6:]
-            if n.startswith('model'): n = n[5:] if n.startswith('model.') else n[5:]
-            # 3. Handle onnx2torch 'Conv' nesting (model.0.conv.Conv.weight -> 0.conv.weight)
-            n = n.replace('.Conv.', '.').replace('.conv.', '.')
-            # 4. Remove final redundancy
-            n = n.replace('.weight', '').replace('.bias', '')
-            return n.strip('.')
-
-        # Pre-process state_dict to have normalized keys
-        normalized_state = {normalize_name(k): v for k, v in state_dict.items()}
-        
-        updated_count = 0
-        for initializer in base_onnx.graph.initializer:
-            # We also need the type of parameter (weight vs bias) to distinguish matches
-            init_type = 'weight' if 'weight' in initializer.name.lower() else 'bias'
-            norm_init_name = normalize_name(initializer.name)
-            
-            # Find a match in the state_dict
-            match_found = False
-            for state_key, param_val in state_dict.items():
-                if normalize_name(state_key) == norm_init_name:
-                    # Check if both are weights or both are biases
-                    state_type = 'weight' if 'weight' in state_key.lower() else 'bias'
-                    if init_type != state_type: continue
-                    
-                    param = param_val.detach().cpu().numpy()
-                    if list(initializer.dims) == list(param.shape):
-                        initializer.raw_data = param.tobytes()
-                        updated_count += 1
-                        match_found = True
-                        break
-                    elif list(initializer.dims) == list(param.shape[::-1]):
-                        initializer.raw_data = param.T.copy().tobytes()
-                        updated_count += 1
-                        match_found = True
-                        break
-        
-        onnx.save(base_onnx, output_path)
-        print(f"STATUS: Successfully injected {updated_count} trained parameter sets into ONNX.")
-        if updated_count < 10:
-            print("DEBUG: Logic failed. Standardizing names did not find enough matches.")
-            print("DEBUG: Final StateDict Match Key (sample):", list(normalized_state.keys())[:5])
-            print("DEBUG: Final ONNX Match Key (sample):", [normalize_name(i.name) for i in base_onnx.graph.initializer[:5]])
-        print("STATUS: ONNX Edge Training Artifact saved.")
+        torch.save(pytorch_model.state_dict(), output_path)
+        print(f"STATUS: Saved PyTorch StateDict to {output_path}")
     except Exception as e:
-        print(f"STATUS: Weight injection failed: {e}")
-        import shutil
-        shutil.copy(model_path, output_path)
+        print(f"STATUS: Weight saving failed: {e}")
+        # If it fails, we shouldn't copy the ONNX since the backend expects .pth now. 
+        # Just exit with error so Dart knows it failed.
+        sys.exit(1)
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
-        print("Usage: python desktop_train.py <input.onnx> <output.onnx> <chithram_faces.db path> [cache_dir]")
+        print("Usage: python desktop_train.py <input.onnx> <output.pth> <chithram_faces.db path> [cache_dir]")
         sys.exit(1)
         
     model_path = sys.argv[1]

@@ -79,9 +79,20 @@ func InitFLService() {
 		}
 
 		evalModel := func(modelPath string, label string) {
-			if _, err := os.Stat(modelPath); err != nil {
+			fileInfo, err := os.Stat(modelPath)
+			if err != nil {
 				log.Printf("SKIP: Model %s not found", modelPath)
 				return
+			}
+
+			// Check Database to skip redundant evaluations
+			var lastMetric models.ModelMetric
+			// Assuming database connection guarantees initialized DB object
+			if err := database.DB.Where("version = ?", label).Order("created_at desc").First(&lastMetric).Error; err == nil {
+				if lastMetric.CreatedAt.After(fileInfo.ModTime()) {
+					log.Printf("SKIP: Model %s (%s) already evaluated on %v. Returning cached metrics.", label, modelPath, lastMetric.CreatedAt.Format(time.RFC3339))
+					return
+				}
 			}
 			log.Printf("--- EVALUATING %s (%s) ---", label, modelPath)
 			evalCmd := exec.Command(pythonExe, "./scripts/evaluate_model.py", "--model", modelPath)
@@ -116,7 +127,7 @@ func InitFLService() {
 		}
 
 		// 1. Evaluate the Original Baseline
-		evalModel("./models/yolov8n.onnx", "original_baseline")
+		evalModel("./models/yolov8n-face.onnx", "original_baseline")
 
 		// 2. Evaluate the Current Live Model
 		evalModel("./models/face-detection.onnx", "current_live")
@@ -151,7 +162,7 @@ func AggregateModels() {
 	// Count only valid model files
 	var modelFiles []string
 	for _, f := range files {
-		if !f.IsDir() && filepath.Ext(f.Name()) == ".onnx" {
+		if !f.IsDir() && filepath.Ext(f.Name()) == ".pth" {
 			modelFiles = append(modelFiles, filepath.Join(PendingUpdatesDir, f.Name()))
 		}
 	}
@@ -177,7 +188,7 @@ func AggregateModels() {
 		pythonExe, _ = filepath.Abs("../.venv/bin/python")
 	}
 
-	cmd := exec.Command(pythonExe, "./scripts/aggregate_models.py", "--output", outputPath)
+	cmd := exec.Command(pythonExe, "./scripts/aggregate_models.py", "--output", outputPath, "--base_model", "./models/face-detection.onnx")
 	cmd.Args = append(cmd.Args, modelFiles...)
 
 	// Capture output for debugging
@@ -240,10 +251,16 @@ func AggregateModels() {
 	if _, err := os.Stat(oldModelPath); err == nil {
 		oldModelName := fmt.Sprintf("face-detection_old_%d.onnx", time.Now().Unix())
 		archivePath := filepath.Join("./models", oldModelName)
-		if err := os.Rename(oldModelPath, archivePath); err != nil {
-			log.Printf("Failed to rename old face-detection.onnx: %v", err)
-		} else {
-			log.Printf("Renamed old model to %s", oldModelName)
+
+		// Some OS systems don't handle Rename well across drives/partitions, so we copy then delete
+		oldData, err := ioutil.ReadFile(oldModelPath)
+		if err == nil {
+			if err := ioutil.WriteFile(archivePath, oldData, 0644); err != nil {
+				log.Printf("Failed to archive old face-detection.onnx: %v", err)
+			} else {
+				os.Remove(oldModelPath)
+				log.Printf("Archived old model to %s", oldModelName)
+			}
 		}
 	}
 

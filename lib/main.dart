@@ -160,6 +160,19 @@ class NintaApp extends StatelessWidget {
           secondary: Colors.white,
           background: Colors.black,
         ),
+        popupMenuTheme: PopupMenuThemeData(
+          color: const Color(0xFF1E1E1E), // Premium sleek dark grey
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          elevation: 8,
+          surfaceTintColor: Colors.transparent, // Remove Material 3 purple tint
+          textStyle: const TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
         useMaterial3: true,
       ),
       routerConfig: _router,

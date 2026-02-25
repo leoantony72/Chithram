@@ -127,10 +127,14 @@ class PhotoProvider with ChangeNotifier {
       final syncResponse = await BackupService().syncImages(username, lastSync);
 
       if (syncResponse != null && syncResponse.updates.isNotEmpty) {
-          // Merge updates (highly simplified: just append for now, or replace by ID)
+          // Merge updates or remove soft-deleted ones
           final Map<String, RemoteImage> map = { for (var e in _remoteImages) e.imageId : e };
           for (var up in syncResponse.updates) {
-             map[up.imageId] = up; 
+             if (up.isDeleted) {
+                map.remove(up.imageId);
+             } else {
+                map[up.imageId] = up; 
+             }
           }
           _remoteImages = map.values.toList();
           
@@ -477,6 +481,217 @@ class PhotoProvider with ChangeNotifier {
       return decimal;
     } catch (e) {
       return null;
+    }
+  }
+
+  // --- Multi-Select Deletion Logic ---
+  
+  /// Smartly handles deleting local and remote images, including prompting the user.
+  Future<void> deleteSelectedPhotos(BuildContext context, List<GalleryItem> selectedItems) async {
+    if (selectedItems.isEmpty) return;
+
+    final session = await AuthService().loadSession();
+    final username = session?['username'] as String?;
+
+    final List<GalleryItem> localOnly = [];
+    final List<GalleryItem> remoteOnly = [];
+    final List<GalleryItem> mixedSync = [];
+
+    // Analyze selection topology
+    final Set<String> localIds = _allAssets.map((e) => e.id).toSet();
+    
+    for (final item in selectedItems) {
+      if (item.type == GalleryItemType.remote) {
+        // Technically pure remote
+        remoteOnly.add(item);
+      } else if (item.type == GalleryItemType.local) {
+        // Find if this local asset ALSO exists on the cloud
+        final bool existsInCloud = _remoteImages.any((r) => r.sourceId == item.id);
+        if (existsInCloud && username != null) {
+          mixedSync.add(item);
+        } else {
+          localOnly.add(item);
+        }
+      }
+    }
+
+    bool deleteFromCloud = true; // Default intent for remote-only items
+    
+    // Prompt the user if they are deleting mixed/synced items
+    if (mixedSync.isNotEmpty) {
+      final bool? result = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Delete from Cloud?', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          content: Text(
+            '${mixedSync.length} of the selected photos are backed up to your cloud.\n\nDo you want to permanently delete them from the cloud as well, or keep them backed up and just remove them from this device?',
+            style: const TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false), // Keep in cloud
+              child: const Text('Device Only', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: () => Navigator.pop(ctx, true), // Delete cloud
+              child: const Text('Delete Everywhere'),
+            ),
+          ],
+        ),
+      );
+
+      if (result == null) return; // User cancelled
+      deleteFromCloud = result;
+    } else if (localOnly.isNotEmpty && remoteOnly.isEmpty) {
+        // Standard local deletion prompt
+        final bool? result = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Text('Delete Photos?', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              content: Text('Are you sure you want to delete ${localOnly.length} photos from your device?', style: const TextStyle(color: Colors.white70)),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel', style: TextStyle(color: Colors.white54))),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Delete'),
+                ),
+              ],
+            )
+        );
+        if (result != true) return;
+    }
+
+    // Execute Operations
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      // 1. MinIO Cloud Deletion (if applicable and logged in)
+      final List<String> cloudIdsToDelete = [];
+      if (username != null) {
+        cloudIdsToDelete.addAll(remoteOnly.map((e) => e.remote!.imageId));
+        
+        if (deleteFromCloud) {
+           for (final mixed in mixedSync) {
+              final remoteRef = _remoteImages.firstWhereOrNull((r) => r.sourceId == mixed.id);
+              if (remoteRef != null) cloudIdsToDelete.add(remoteRef.imageId);
+           }
+        }
+        
+        if (cloudIdsToDelete.isNotEmpty) {
+           final success = await BackupService().deleteCloudImages(username, cloudIdsToDelete);
+           if (success) {
+              // Remove locally cached remote tracking
+              _remoteImages.removeWhere((img) => cloudIdsToDelete.contains(img.imageId));
+           }
+        }
+      }
+
+      // 2. Local OS Deletion
+      final List<String> localOsIdsToDelete = [];
+      localOsIdsToDelete.addAll(localOnly.map((e) => e.id));
+      localOsIdsToDelete.addAll(mixedSync.map((e) => e.id));
+
+      if (localOsIdsToDelete.isNotEmpty && !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
+         final deletedIds = await PhotoManager.editor.deleteWithIds(localOsIdsToDelete);
+         // Update state variables for remaining assets
+         _allAssets.removeWhere((asset) => deletedIds.contains(asset.id));
+      } else if (localOsIdsToDelete.isNotEmpty && !kIsWeb && Platform.isWindows) {
+         // Specialized windows deletion
+         for (final asset in [...localOnly, ...mixedSync]) {
+            try {
+               final file = await asset.local?.file;
+               if (file != null && await file.exists()) {
+                  await file.delete();
+               }
+               _allAssets.removeWhere((a) => a.id == asset.id);
+            } catch(e) { print('Failed deleting Windows file: $e'); }
+         }
+      }
+
+      // Regroup and hydrate UI
+      _groupAssets();
+      
+      // Explicitly remove from _allItems cache manually if any leaked past _groupAssets rebuilding
+      final allDeletedIds = [
+         ...cloudIdsToDelete,
+         ...localOsIdsToDelete
+      ];
+      _allItems.removeWhere((item) => allDeletedIds.contains(item.id));
+
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Bulk updates the map location coordinates for the selected items.
+  Future<void> updateLocationForSelected(List<GalleryItem> selectedItems, double lat, double lng) async {
+    if (selectedItems.isEmpty) return;
+    
+    _isLoading = true;
+    notifyListeners();
+    
+    try {
+       final session = await AuthService().loadSession();
+       final username = session?['username'] as String?;
+       
+       if (username != null) {
+          final List<String> cloudIdsToUpdate = [];
+          for (final item in selectedItems) {
+             if (item.type == GalleryItemType.remote) {
+                cloudIdsToUpdate.add(item.remote!.imageId);
+             } else if (item.type == GalleryItemType.local) {
+                final cloudEquiv = _remoteImages.firstWhereOrNull((r) => r.sourceId == item.id);
+                if (cloudEquiv != null) {
+                   cloudIdsToUpdate.add(cloudEquiv.imageId);
+                }
+             }
+          }
+          
+          if (cloudIdsToUpdate.isNotEmpty) {
+             final success = await BackupService().updateCloudLocation(username, cloudIdsToUpdate, lat, lng);
+             if (success) {
+                // Update Runtime Cache
+                for (int i = 0; i < _remoteImages.length; i++) {
+                   if (cloudIdsToUpdate.contains(_remoteImages[i].imageId)) {
+                      // Needs mutable mapping since we don't have copyWith
+                      final old = _remoteImages[i];
+                      _remoteImages[i] = RemoteImage(
+                         imageId: old.imageId, userId: old.userId, album: old.album,
+                         width: old.width, height: old.height, size: old.size,
+                         latitude: lat, longitude: lng,
+                         originalUrl: old.originalUrl, thumb256Url: old.thumb256Url, thumb64Url: old.thumb64Url,
+                         sourceId: old.sourceId, createdAt: old.createdAt, isDeleted: old.isDeleted
+                      );
+                   }
+                }
+             }
+          }
+       }
+       
+       // Update Local Map Cache for instant UI feedback regardless of backend
+       for (final item in selectedItems) {
+          _locationCache[item.id] = latlong.LatLng(lat, lng);
+       }
+       
+       // Re-trigger Grouping to pass new props down
+       _groupAssets();
+    } catch (e) {
+       print("Error updating locations: $e");
+    } finally {
+       _isLoading = false;
+       notifyListeners();
     }
   }
 }

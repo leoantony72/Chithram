@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../../services/backup_service.dart';
 import '../../services/federated_learning_service.dart';
+import '../../services/api_config.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -54,12 +55,73 @@ class _SettingsPageState extends State<SettingsPage> {
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               children: [
+                _buildNetworkSection(),
+                const Divider(),
                 if (!kIsWeb && !Platform.isWindows) _buildBackupSection(),
                 if (!kIsWeb && !Platform.isWindows) const Divider(),
                 if (!kIsWeb) _buildFLSection(),
                 if (kIsWeb) const Padding(padding: EdgeInsets.all(24), child: Center(child: Text("Web Interface Settings (Local Features Disabled)"))),
               ],
             ),
+    );
+  }
+
+  Widget _buildNetworkSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Text('Network Configuration', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        ),
+        FutureBuilder<String>(
+          future: ApiConfig().getCurrentIp(),
+          builder: (context, snapshot) {
+            final currentIp = snapshot.data ?? 'Loading...';
+            return ListTile(
+              title: const Text('Backend API Host'),
+              subtitle: Text(currentIp),
+              trailing: const Icon(Icons.edit),
+              onTap: () {
+                final controller = TextEditingController(text: currentIp);
+                showDialog(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Set Custom IP'),
+                    content: TextField(
+                      controller: controller,
+                      decoration: const InputDecoration(
+                        hintText: 'e.g. 192.168.1.5',
+                      ),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          if (controller.text.isNotEmpty) {
+                            await ApiConfig().setCustomIp(controller.text);
+                            if (mounted) {
+                              setState(() {}); // Refresh UI
+                              Navigator.pop(ctx);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('API Host updated!')),
+                              );
+                            }
+                          }
+                        },
+                        child: const Text('Save'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+      ],
     );
   }
 

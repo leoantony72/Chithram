@@ -12,6 +12,7 @@ class RemoteImage {
   final String thumb64Url;
   final String? sourceId; // Original asset ID from device
   final DateTime? createdAt;
+  final bool isDeleted;
 
   RemoteImage({
     required this.imageId,
@@ -27,6 +28,7 @@ class RemoteImage {
     required this.thumb64Url,
     this.sourceId,
     this.createdAt,
+    this.isDeleted = false,
   });
 
   factory RemoteImage.fromJson(Map<String, dynamic> json) {
@@ -46,6 +48,7 @@ class RemoteImage {
       createdAt: json['created_at'] != null 
           ? DateTime.tryParse(json['created_at']) 
           : null,
+      isDeleted: json['is_deleted'] == true || json['is_deleted'] == 1,
     );
   }
 }

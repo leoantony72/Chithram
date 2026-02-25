@@ -64,6 +64,8 @@ func main() {
 	r.POST("/upload", controllers.BatchUploadImages)
 
 	// Image Endpoints
+	r.DELETE("/images", controllers.DeleteImages)
+	r.PUT("/images/location", controllers.UpdateImageLocation)
 	r.GET("/albums", controllers.GetAlbums)
 	r.GET("/images", controllers.ListImages)
 	r.GET("/images/:id", controllers.GetSingleImage)

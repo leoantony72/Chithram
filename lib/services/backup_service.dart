@@ -14,6 +14,7 @@ import '../models/remote_image.dart';
 import 'database_service.dart';
 import 'auth_service.dart';
 import 'crypto_service.dart';
+import 'api_config.dart';
 
 import 'package:flutter/foundation.dart';
 
@@ -31,23 +32,7 @@ class BackupService {
   bool _isRunning = false;
   
   // URL Helper
-  String get _baseUrl {
-    if (kIsWeb) {
-      final host = Uri.base.host;
-      if (host.isNotEmpty && host != 'localhost' && host != '127.0.0.1') {
-        return 'http://$host:8080';
-      }
-      return 'http://localhost:8080';
-    }
-    // For Windows running the local server, localhost is often more reliable
-    if (!kIsWeb && Platform.isWindows) {
-      return 'http://localhost:8080';
-    }
-    if (!kIsWeb && Platform.isAndroid) {
-       return 'http://192.168.18.11:8080';
-    }
-    return 'http://localhost:8080';
-  }
+  String get _baseUrl => ApiConfig().baseUrl;
 
   Uri _resolveUri(String url) {
     Uri uri = Uri.parse(url);
@@ -762,6 +747,64 @@ class BackupService {
           print('BackupService: Error getting remote people version: $e');
       }
       return -1;
+  }
+
+  // --- Deletion Features ---
+  
+  /// Deletes specified image IDs permanently from the cloud backend.
+  Future<bool> deleteCloudImages(String userId, List<String> imageIds) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/images?user_id=$userId');
+      final requestBody = jsonEncode({
+        'image_ids': imageIds,
+      });
+
+      final response = await http.delete(
+        uri, 
+        headers: {'Content-Type': 'application/json'},
+        body: requestBody,
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        print('BackupService: Successfully deleted ${imageIds.length} images from cloud.');
+        return true;
+      } else {
+        print('BackupService: Failed to delete cloud images. Code: ${response.statusCode}, Body: ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      print('BackupService: Error during deleteCloudImages: $e');
+      return false;
+    }
+  }
+
+  /// Updates the geographic location of specified cloud images.
+  Future<bool> updateCloudLocation(String userId, List<String> imageIds, double latitude, double longitude) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/images/location?user_id=$userId');
+      final requestBody = jsonEncode({
+        'image_ids': imageIds,
+        'latitude': latitude,
+        'longitude': longitude,
+      });
+
+      final response = await http.put(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: requestBody,
+      );
+
+      if (response.statusCode == 200) {
+        print('BackupService: Successfully updated location for ${imageIds.length} images.');
+        return true;
+      } else {
+        print('BackupService: Failed to update location. Code: ${response.statusCode}, Body: ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      print('BackupService: Error during updateCloudLocation: $e');
+      return false;
+    }
   }
 
   Future<bool> downloadFaceDatabase({bool inMemoryOnly = false}) async {

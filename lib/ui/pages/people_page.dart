@@ -147,9 +147,10 @@ class _PeoplePageState extends State<PeoplePage> {
     if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
        await _scanDetectionPhase();
        await _scanEmbeddingPhase();
-    } else {
-       await _scanCloudPhotos();
     }
+    
+    // Always scan cloud photos to ensure all images are used
+    await _scanCloudPhotos();
 
     if (_statusMessage != 'Scan Complete') {
        await _scanClusteringPhase();

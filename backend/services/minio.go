@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -13,8 +14,8 @@ import (
 
 var MinioClient *minio.Client
 
+var Endpoint string // Reachable from Android units on LAN
 const (
-	Endpoint        = "192.168.18.11:9000" // Reachable from Android units on LAN
 	AccessKeyID     = "minioadmin"
 	SecretAccessKey = "minioadmin"
 	UseSSL          = false
@@ -23,6 +24,13 @@ const (
 
 func InitMinio() {
 	var err error
+
+	// Read dynamic endpoint from environment or default to localhost
+	Endpoint = os.Getenv("MINIO_HOST")
+	if Endpoint == "" {
+		Endpoint = "localhost:9000"
+	}
+
 	// Initialize minio client object.
 	MinioClient, err = minio.New(Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
@@ -102,4 +110,13 @@ func GetPresignedPutURL(objectName string, expiry time.Duration) (string, error)
 		return "", err
 	}
 	return presignedURL.String(), nil
+}
+
+// DeleteObject deletes an object from the MinIO bucket
+func DeleteObject(objectName string) error {
+	ctx := context.Background()
+	opts := minio.RemoveObjectOptions{
+		GovernanceBypass: true,
+	}
+	return MinioClient.RemoveObject(ctx, BucketName, objectName, opts)
 }

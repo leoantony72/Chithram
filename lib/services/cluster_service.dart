@@ -77,7 +77,6 @@ class ClusterService {
         
         final clusterId = await _dbService.createCluster(
           name: clusterName,
-          representativeFaceId: nodes[i].id, 
         );
 
         final List<_FaceNode> clusterMembers = [nodes[i]];
@@ -112,15 +111,26 @@ class ClusterService {
            await _dbService.updateFaceCluster(member.id, clusterId);
         }
         
-        // 5. Update Centroid
-        await _calculateAndSaveCentroid(clusterId, clusterMembers);
+        // 5. Update Centroid & Find Best Representative Face
+        final meanVector = await _calculateAndSaveCentroid(clusterId, clusterMembers);
+        
+        if (meanVector.isNotEmpty) {
+           int bestFaceId = clusterMembers.first.id;
+           double minDistance = double.infinity;
+           
+           for (var member in clusterMembers) {
+               final dist = _calculateEuclideanDistance(member.embedding, meanVector);
+               if (dist < minDistance) {
+                   minDistance = dist;
+                   bestFaceId = member.id;
+               }
+           }
+           await _dbService.updateClusterRepresentative(clusterId, bestFaceId);
+        }
       }
     } catch (e, stack) {
       print('Clustering Error: $e');
-      print(stack);
     }
-    
-    print('Clustering Complete. Found $clusterCount clusters.');
   }
 
   List<_FaceNode> _regionQuery(List<_FaceNode> allNodes, _FaceNode center) {
@@ -135,8 +145,8 @@ class ClusterService {
     return neighbors;
   }
 
-  Future<void> _calculateAndSaveCentroid(int clusterId, List<_FaceNode> members) async {
-    if (members.isEmpty) return;
+  Future<List<double>> _calculateAndSaveCentroid(int clusterId, List<_FaceNode> members) async {
+    if (members.isEmpty) return [];
     
     // Calculate Mean Vector
     final int dim = members[0].embedding.length;
@@ -159,6 +169,8 @@ class ClusterService {
 
     final bytes = Float32List.fromList(meanVector).buffer.asUint8List();
     await _dbService.updateClusterEmbedding(clusterId, bytes);
+    
+    return meanVector;
   }
 
   List<double> _loadEmbedding(Uint8List blob) {

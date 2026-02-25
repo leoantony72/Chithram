@@ -141,7 +141,25 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
         backgroundColor: Colors.black,
         elevation: 0,
         actions: [
-          IconButton(icon: const Icon(Icons.edit), onPressed: _editName),
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'rename') {
+                _editName();
+              } else if (value == 'set_cover') {
+                _showCoverPhotoSelector();
+              }
+            },
+            itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+              const PopupMenuItem<String>(
+                value: 'rename',
+                child: Text('Rename Person'),
+              ),
+              const PopupMenuItem<String>(
+                value: 'set_cover',
+                child: Text('Set Cover Photo'),
+              ),
+            ],
+          ),
         ],
       ),
       body: _isLoading
@@ -204,6 +222,140 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
                   ]
                   ],
                 ),
+    );
+  }
+
+  Future<void> _showCoverPhotoSelector() async {
+    // Show loading dialog or bottom sheet 
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.grey[900],
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return _CoverPhotoSelectorSheet(
+          personId: widget.personId,
+          dbService: _dbService,
+          onFaceSelected: (int faceId) async {
+            await _dbService.updateClusterRepresentative(widget.personId, faceId);
+            if (mounted) {
+               Navigator.pop(context); // Close sheet
+               ScaffoldMessenger.of(context).showSnackBar(
+                 const SnackBar(content: Text('Cover photo updated! Syncing to cloud...'), duration: Duration(seconds: 2)),
+               );
+            }
+            // Trigger Cloud Backup
+            await BackupService().uploadFaceDatabase();
+          },
+        );
+      },
+    );
+  }
+}
+
+class _CoverPhotoSelectorSheet extends StatefulWidget {
+  final int personId;
+  final DatabaseService dbService;
+  final Function(int faceId) onFaceSelected;
+
+  const _CoverPhotoSelectorSheet({
+    required this.personId,
+    required this.dbService,
+    required this.onFaceSelected,
+  });
+
+  @override
+  State<_CoverPhotoSelectorSheet> createState() => _CoverPhotoSelectorSheetState();
+}
+
+class _CoverPhotoSelectorSheetState extends State<_CoverPhotoSelectorSheet> {
+  List<Map<String, dynamic>> _faces = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFaces();
+  }
+
+  Future<void> _loadFaces() async {
+    final allFaces = await widget.dbService.getFacesInCluster(widget.personId);
+    
+    // Only show cover photos where the thumbnail is actually present/valid
+    final validFaces = allFaces.where((f) {
+      final thumbBytes = f['thumbnail'] as Uint8List?;
+      return thumbBytes != null && thumbBytes.isNotEmpty;
+    }).toList();
+
+    if (mounted) {
+       setState(() {
+         _faces = validFaces;
+         _isLoading = false;
+       });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.4,
+      maxChildSize: 0.9,
+      expand: false,
+      builder: (context, scrollController) {
+        if (_isLoading) {
+           return const Center(child: CircularProgressIndicator());
+        }
+        if (_faces.isEmpty) {
+           return const Center(child: Text('No faces found.', style: TextStyle(color: Colors.white)));
+        }
+        return Column(
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Text(
+                'Select Cover Photo',
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            Expanded(
+              child: GridView.builder(
+                controller: scrollController,
+                padding: const EdgeInsets.all(12),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 4,
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                ),
+                itemCount: _faces.length,
+                itemBuilder: (context, index) {
+                  final face = _faces[index];
+                  final Uint8List? thumbBytes = face['thumbnail'] as Uint8List?;
+                  
+                  return GestureDetector(
+                    onTap: () => widget.onFaceSelected(face['id'] as int),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: thumbBytes != null && thumbBytes.isNotEmpty
+                          ? Image.memory(
+                              thumbBytes, 
+                              fit: BoxFit.cover,
+                              filterQuality: FilterQuality.low,
+                            )
+                          : Container(
+                              color: Colors.grey[800],
+                              child: const Icon(Icons.person, color: Colors.white54),
+                            ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }

@@ -263,6 +263,7 @@ class DatabaseService {
     final db = await database;
     final result = await db.query(
       'faces',
+      distinct: true,
       columns: ['image_path'],
       where: 'cluster_id = ?',
       whereArgs: [clusterId],
@@ -293,7 +294,7 @@ class DatabaseService {
       SELECT 
         c.id, 
         c.name, 
-        COALESCE(c.thumbnail, f.thumbnail) as thumbnail,
+        COALESCE(f.thumbnail, c.thumbnail) as thumbnail,
         c.representative_face_id
       FROM clusters c
       LEFT JOIN faces f ON c.representative_face_id = f.id

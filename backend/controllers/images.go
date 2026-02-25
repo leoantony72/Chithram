@@ -82,6 +82,8 @@ func ListImages(c *gin.Context) {
 		query = query.Where("album = ?", albumFilter)
 	}
 
+	query = query.Where("is_deleted = ?", false)
+
 	query = query.Order("modified_at DESC, image_id DESC").
 		Limit(limit).
 		Offset(page * limit)
@@ -95,7 +97,7 @@ func ListImages(c *gin.Context) {
 	response := []ImageResponse{} // Initialize slice to ensure [] is returned instead of null
 	for _, img := range images {
 		resp := ImageResponse{Image: img}
-		expiry := 15 * time.Minute
+		expiry := 7 * 24 * time.Hour
 
 		// Adjusted to Originals and Thumbnails folders
 		originalPath := fmt.Sprintf("%s/images/originals/%s.enc", img.UserID, img.ImageID)
@@ -148,7 +150,7 @@ func SyncImages(c *gin.Context) {
 		resp := ImageResponse{Image: img}
 		// Only generate URLs if not deleted
 		if !img.IsDeleted {
-			expiry := 15 * time.Minute
+			expiry := 7 * 24 * time.Hour
 			originalPath := fmt.Sprintf("%s/images/originals/%s.enc", img.UserID, img.ImageID)
 			thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", img.UserID, img.ImageID)
 			thumb64Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_64.enc", img.UserID, img.ImageID)
@@ -185,7 +187,7 @@ func GenerateUploadURLs(c *gin.Context) {
 	}
 
 	urls := make(map[string]string)
-	expiry := 15 * time.Minute
+	expiry := 7 * 24 * time.Hour
 
 	for _, variant := range input.Variants {
 		var objectName string
@@ -262,7 +264,7 @@ func GetFacesDownloadURL(c *gin.Context) {
 	}
 
 	objectName := fmt.Sprintf("%s/metadata/faces.enc", userID)
-	url, err := services.GetPresignedURL(objectName, 15*time.Minute)
+	url, err := services.GetPresignedURL(objectName, 7*24*time.Hour)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate download URL"})
 		return
@@ -337,7 +339,7 @@ func GetSingleImage(c *gin.Context) {
 	}
 
 	resp := ImageResponse{Image: img}
-	expiry := 15 * time.Minute
+	expiry := 7 * 24 * time.Hour
 
 	originalPath := fmt.Sprintf("%s/images/originals/%s.enc", img.UserID, img.ImageID)
 	thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", img.UserID, img.ImageID)
@@ -381,7 +383,7 @@ func GetAlbums(c *gin.Context) {
 	}
 
 	var albumsResp []AlbumResponse
-	expiry := 15 * time.Minute
+	expiry := 7 * 24 * time.Hour
 
 	for _, res := range results {
 		thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", userID, res.ImageID)
@@ -398,4 +400,91 @@ func GetAlbums(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"albums": albumsResp})
+}
+
+// DeleteImages handles permanent removal of images from cloud storage while soft-deleting in the DB for sync.
+func DeleteImages(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var input struct {
+		ImageIDs []string `json:"image_ids" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if len(input.ImageIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No image IDs provided"})
+		return
+	}
+
+	// Soft delete in DB (set is_deleted = 1 and update modified_at for sync)
+	now := time.Now()
+	if err := database.DB.Model(&models.Image{}).
+		Where("user_id = ? AND image_id IN (?)", userID, input.ImageIDs).
+		Updates(map[string]interface{}{
+			"is_deleted":  true,
+			"modified_at": now,
+		}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to mark images as deleted in database"})
+		return
+	}
+
+	// Issue hard deletion commands to MinIO to free up space and ensure privacy
+	for _, id := range input.ImageIDs {
+		originalPath := fmt.Sprintf("%s/images/originals/%s.enc", userID, id)
+		thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", userID, id)
+		thumb64Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_64.enc", userID, id)
+
+		services.DeleteObject(originalPath)
+		services.DeleteObject(thumb256Path)
+		services.DeleteObject(thumb64Path)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully processing deletion for %d images", len(input.ImageIDs))})
+}
+
+// UpdateImageLocation performs a bulk update of latitude and longitude for the specified image IDs.
+func UpdateImageLocation(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var input struct {
+		ImageIDs  []string `json:"image_ids" binding:"required"`
+		Latitude  float64  `json:"latitude"`
+		Longitude float64  `json:"longitude"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if len(input.ImageIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No image IDs provided"})
+		return
+	}
+
+	now := time.Now()
+	if err := database.DB.Model(&models.Image{}).
+		Where("user_id = ? AND image_id IN (?)", userID, input.ImageIDs).
+		Updates(map[string]interface{}{
+			"latitude":    input.Latitude,
+			"longitude":   input.Longitude,
+			"modified_at": now,
+		}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update locations in database"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully updated location for %d images", len(input.ImageIDs))})
 }

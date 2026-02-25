@@ -220,8 +220,8 @@ class _MapPageState extends State<MapPage> {
               // Dark Mode / Light Mode Tiles
               TileLayer(
                 urlTemplate: _isDarkMap 
-                    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-                    : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
+                    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' // Using standard Carto URL format without hardcoded @2x that often fails
+                    : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', // Reliable fallback for light mode
                 subdomains: const ['a', 'b', 'c', 'd'],
                 userAgentPackageName: 'com.example.ninta', 
               ),

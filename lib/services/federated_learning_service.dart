@@ -13,17 +13,10 @@ import 'backup_service.dart';
 import 'crypto_service.dart';
 import 'database_service.dart';
 import 'model_service.dart';
+import 'api_config.dart';
 
 class FederatedLearningService {
-  static String get serverUrl {
-    if (Platform.isWindows) {
-      return 'http://localhost:8080';
-    }
-    if (Platform.isAndroid || Platform.isIOS) {
-      return 'http://192.168.18.11:8080';
-    }
-    return 'http://localhost:8080';
-  }
+  static String get serverUrl => ApiConfig().baseUrl;
   static const String globalModelFilename = "face-detection.onnx";
   static const String lastUpdatedKey = "fl_last_updated";
 
@@ -51,7 +44,7 @@ class FederatedLearningService {
       return;
     }
 
-    final updatedModelPath = "${modelFile.path}_updated.onnx";
+    final updatedModelPath = "${modelFile.path}_update.pth";
     final updatedFile = File(updatedModelPath);
 
     if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
@@ -166,7 +159,7 @@ class FederatedLearningService {
         } else if (exitCode == 3) { // Exit code 3 is our "Already Trained" signal
            onProgress?.call(1.0, "All data already processed.");
            return;
-        } else if (exitCode != 0 && exitCode != 1) { 
+        } else if (exitCode != 0) { 
            onProgress?.call(0, "Training process failed (Exit: $exitCode)");
            return;
         }
@@ -199,7 +192,7 @@ class FederatedLearningService {
         await http.MultipartFile.fromPath(
           'model', 
           updatedFile.path,
-          filename: 'local_update.onnx',
+          filename: 'local_update.pth',
         ),
       );
       

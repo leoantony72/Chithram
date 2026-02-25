@@ -6,6 +6,7 @@ import 'package:sodium_libs/sodium_libs_sumo.dart'; // For Sumo types
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/foundation.dart';
 import 'crypto_service.dart';
+import 'api_config.dart';
 
 class AuthService {
   static final AuthService _instance = AuthService._internal();
@@ -19,23 +20,8 @@ class AuthService {
 
   AuthService._internal();
 
-  // Helper for Base URL
-  String get _baseUrl {
-    if (kIsWeb) {
-      final host = Uri.base.host;
-      if (host.isNotEmpty && host != 'localhost' && host != '127.0.0.1') {
-        return 'http://$host:8080';
-      }
-      return 'http://localhost:8080';
-    }
-    if (!kIsWeb && Platform.isWindows) {
-      return 'http://localhost:8080';
-    }
-    if (!kIsWeb && Platform.isAndroid) {
-      return 'http://192.168.18.11:8080';
-    }
-    return 'http://localhost:8080';
-  }
+  // Import API config below
+  String get _baseUrl => ApiConfig().baseUrl;
 
   Future<void> init() async {
     await _cryptoService.init();

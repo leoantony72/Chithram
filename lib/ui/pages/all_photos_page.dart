@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -18,6 +19,8 @@ import '../widgets/album_cover_widget.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../services/backup_service.dart';
 import '../../services/auth_service.dart';
+import 'location_picker_page.dart';
+import 'package:latlong2/latlong.dart' as latlong;
 
 class AllPhotosPage extends StatefulWidget {
   const AllPhotosPage({super.key});
@@ -523,30 +526,6 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                   onPressed: () => selection.clearSelection(),
                 ),
                 title: Text('${selection.selectedItems.length} selected', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-                actions: [
-                  IconButton(
-                    icon: const Icon(Icons.library_add_outlined, color: Colors.white),
-                    tooltip: 'Add to album',
-                    onPressed: () { 
-                       // TODO: show Add to Album Dialog
-                    },
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.add_location_alt_outlined, color: Colors.white),
-                    tooltip: 'Add location',
-                    onPressed: () { 
-                       // TODO: Location editing
-                    },
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                    tooltip: 'Delete',
-                    onPressed: () { 
-                       // TODO: Add deletion feature
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                ],
               );
             }
             return AppBar(
@@ -628,103 +607,188 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
           },
         ),
       ),
-      body: Consumer<PhotoProvider>(
-        builder: (context, provider, child) {
-          if (provider.isLoading && provider.allAssets.isEmpty && provider.remoteImages.isEmpty) {
-            return const Center(child: CircularProgressIndicator(color: Colors.white70));
-          }
-           if (provider.groupedByDay.isEmpty && provider.groupedByMonth.isEmpty && provider.groupedByYear.isEmpty) {
-            return const Center(child: Text('No photos found.'));
-          }
+      body: Stack(
+        children: [
+          Consumer<PhotoProvider>(
+            builder: (context, provider, child) {
+              if (provider.isLoading && provider.allAssets.isEmpty && provider.remoteImages.isEmpty) {
+                return const Center(child: CircularProgressIndicator(color: Colors.white70));
+              }
+               if (provider.groupedByDay.isEmpty && provider.groupedByMonth.isEmpty && provider.groupedByYear.isEmpty) {
+                return const Center(child: Text('No photos found.'));
+              }
 
-          List<PhotoGroup> groups;
-          int crossAxisCount;
-          final double screenWidth = MediaQuery.of(context).size.width;
-          final bool isMobile = screenWidth < 600;
+              List<PhotoGroup> groups;
+              int crossAxisCount;
+              final double screenWidth = MediaQuery.of(context).size.width;
+              final bool isMobile = screenWidth < 600;
 
-          switch (_groupMode) {
-            case GroupMode.year:
-              groups = provider.groupedByYear;
-              crossAxisCount = isMobile ? 6 : 8;
-              break;
-            case GroupMode.month:
-              groups = provider.groupedByMonth;
-              crossAxisCount = isMobile ? 4 : 7;
-              break;
-            case GroupMode.day:
-            default:
-              groups = provider.groupedByDay;
-              crossAxisCount = isMobile ? 3 : 6;
-              break;
-          }
+              switch (_groupMode) {
+                case GroupMode.year:
+                  groups = provider.groupedByYear;
+                  crossAxisCount = isMobile ? 6 : 8;
+                  break;
+                case GroupMode.month:
+                  groups = provider.groupedByMonth;
+                  crossAxisCount = isMobile ? 4 : 7;
+                  break;
+                case GroupMode.day:
+                default:
+                  groups = provider.groupedByDay;
+                  crossAxisCount = isMobile ? 3 : 6;
+                  break;
+              }
 
-          return GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onScaleStart: _onScaleStart,
-            onScaleUpdate: _onScaleUpdate,
-            onScaleEnd: _onScaleEnd,
-            child: RefreshIndicator(
-              onRefresh: () => provider.refresh(),
-              color: Colors.white,
-              backgroundColor: Colors.grey[900],
-              child: DraggableScrollIcon(
-                controller: _scrollController,
-                backgroundColor: Colors.grey[900]!.withOpacity(0.8),
-                onDragStart: () => _isFastScrolling.value = true,
-                onDragEnd: () => _isFastScrolling.value = false,
-                child: CustomScrollView(
+              return GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onScaleStart: _onScaleStart,
+                onScaleUpdate: _onScaleUpdate,
+                onScaleEnd: _onScaleEnd,
+                child: RefreshIndicator(
+                  onRefresh: () => provider.refresh(),
+                  color: Colors.white,
+                  backgroundColor: Colors.grey[900],
+                  child: DraggableScrollIcon(
                     controller: _scrollController,
-                    physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
-                    slivers: [
-                      SliverToBoxAdapter(
-                        child: _buildAlbumsRow(provider),
-                      ),
-                      SliverToBoxAdapter(
-                        child: _buildAllHeader(provider.allAssets.length + provider.remoteImages.length),
-                      ),
-                      for (var group in groups) ...[
-                        SliverPersistentHeader(
-                          pinned: false,
-                          delegate: SectionHeaderDelegate(
-                            title: _formatDate(group.date, _groupMode),
+                    backgroundColor: Colors.grey[900]!.withOpacity(0.8),
+                    onDragStart: () => _isFastScrolling.value = true,
+                    onDragEnd: () => _isFastScrolling.value = false,
+                    child: CustomScrollView(
+                        controller: _scrollController,
+                        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+                        slivers: [
+                          SliverToBoxAdapter(
+                            child: _buildAlbumsRow(provider),
                           ),
-                        ),
-                        SliverPadding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                          sliver: SliverGrid(
-                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: crossAxisCount,
-                              crossAxisSpacing: 4,
-                              mainAxisSpacing: 4,
+                          SliverToBoxAdapter(
+                            child: _buildAllHeader(provider.allAssets.length + provider.remoteImages.length),
+                          ),
+                          for (var group in groups) ...[
+                            SliverPersistentHeader(
+                              pinned: false,
+                              delegate: SectionHeaderDelegate(
+                                title: _formatDate(group.date, _groupMode),
+                              ),
                             ),
-                          delegate: SliverChildBuilderDelegate(
-                            (context, index) {
-                              final GalleryItem item = group.items[index];
-                              if (item.type == GalleryItemType.local) {
-                                 return ThumbnailWidget(
-                                   entity: item.local!,
-                                   isFastScrolling: _isFastScrolling,
-                                   heroTagPrefix: 'all_photos',
-                                 );
-                              } else {
-                                 return RemoteThumbnailWidget(
-                                    image: item.remote! 
-                                    // No fast scrolling optimized signal passed yet, but loads async
-                                    // RemoteThumbnailWidget handles loading state
-                                 );
-                              }
-                            },
-                            childCount: group.items.length,
-                          ),
+                            SliverPadding(
+                              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                              sliver: SliverGrid(
+                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: crossAxisCount,
+                                  crossAxisSpacing: 4,
+                                  mainAxisSpacing: 4,
+                                ),
+                              delegate: SliverChildBuilderDelegate(
+                                (context, index) {
+                                  final GalleryItem item = group.items[index];
+                                  if (item.type == GalleryItemType.local) {
+                                     return ThumbnailWidget(
+                                       entity: item.local!,
+                                       isFastScrolling: _isFastScrolling,
+                                       heroTagPrefix: 'all_photos',
+                                     );
+                                  } else {
+                                     return RemoteThumbnailWidget(
+                                        image: item.remote! 
+                                        // No fast scrolling optimized signal passed yet, but loads async
+                                        // RemoteThumbnailWidget handles loading state
+                                     );
+                                  }
+                                },
+                                childCount: group.items.length,
+                              ),
+                            ),
+                           ),
+                          ]
+                        ],
+                      ),
+                    ),
+                ),
+                );
+              },
+          ),
+          
+          // Modern Floating Action Bar
+          Consumer<SelectionProvider>(
+            builder: (context, selection, child) {
+              if (!selection.isSelectionMode || selection.selectedItems.isEmpty) return const SizedBox.shrink();
+
+              return Positioned(
+                bottom: 30, // Hover above bottom bar
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(40),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(40),
+                          border: Border.all(color: Colors.white.withOpacity(0.15)),
+                          boxShadow: const [
+                            BoxShadow(color: Colors.black45, blurRadius: 40, spreadRadius: 0, offset: Offset(0, 10))
+                          ],
                         ),
-                       ),
-                      ]
-                    ],
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _buildActionIcon(Icons.auto_awesome_mosaic_rounded, 'Album', () {}),
+                            const SizedBox(width: 8),
+                            _buildActionIcon(Icons.pin_drop_rounded, 'Location', () async {
+                               final sp = Provider.of<SelectionProvider>(context, listen: false);
+                               final pp = Provider.of<PhotoProvider>(context, listen: false);
+                               final items = List<GalleryItem>.from(sp.selectedItems);
+                               sp.clearSelection();
+                               
+                               // Calculate an initial center if the first selected item has one
+                               latlong.LatLng? initial;
+                               if (items.isNotEmpty) {
+                                  final first = items.first;
+                                  if (first.type == GalleryItemType.local) {
+                                     initial = pp.locationCache[first.local!.id] ?? 
+                                               (first.local!.latitude != null ? latlong.LatLng(first.local!.latitude!, first.local!.longitude!) : null);
+                                  } else {
+                                     if (first.remote!.latitude != 0) {
+                                        initial = latlong.LatLng(first.remote!.latitude, first.remote!.longitude);
+                                     }
+                                  }
+                               }
+
+                               final result = await Navigator.push<latlong.LatLng?>(
+                                  context, 
+                                  MaterialPageRoute(builder: (_) => LocationPickerPage(initialLocation: initial))
+                               );
+                               
+                               if (result != null) {
+                                   await pp.updateLocationForSelected(items, result.latitude, result.longitude);
+                               }
+                            }),
+                            const SizedBox(width: 8),
+                            Container(width: 1, height: 30, color: Colors.white12), // Divider
+                            const SizedBox(width: 8),
+                            _buildActionIcon(Icons.delete_sweep_rounded, 'Delete', () async {
+                              final sp = Provider.of<SelectionProvider>(context, listen: false);
+                              final pp = Provider.of<PhotoProvider>(context, listen: false);
+                              // 1. Copy selection items before clearing
+                              final items = List<GalleryItem>.from(sp.selectedItems);
+                              // 2. Clear visually
+                              sp.clearSelection();
+                              // 3. Delete from backend/local gracefully
+                              await pp.deleteSelectedPhotos(context, items);
+                            }, color: Colors.redAccent),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-            ),
-            );
-          },
+              );
+            },
+          ),
+        ],
       ),
       bottomNavigationBar: ValueListenableBuilder<String?>(
         valueListenable: Provider.of<PhotoProvider>(context, listen: false).backgroundStatus,
@@ -753,6 +817,32 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildActionIcon(IconData icon, String label, VoidCallback onTap, {Color color = Colors.white}) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: onTap,
+        splashColor: color.withOpacity(0.2),
+        highlightColor: color.withOpacity(0.1),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: color, size: 24),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(color: color.withOpacity(0.8), fontSize: 11, fontWeight: FontWeight.w600),
+              )
+            ],
+          ),
+        ),
       ),
     );
   }
