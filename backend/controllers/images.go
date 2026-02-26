@@ -488,3 +488,40 @@ func UpdateImageLocation(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully updated location for %d images", len(input.ImageIDs))})
 }
+
+// UpdateImageAlbum performs a bulk update of the album property for the specified image IDs.
+func UpdateImageAlbum(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var input struct {
+		ImageIDs  []string `json:"image_ids" binding:"required"`
+		AlbumName string   `json:"album_name" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if len(input.ImageIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No image IDs provided"})
+		return
+	}
+
+	now := time.Now()
+	if err := database.DB.Model(&models.Image{}).
+		Where("user_id = ? AND image_id IN (?)", userID, input.ImageIDs).
+		Updates(map[string]interface{}{
+			"album":       input.AlbumName,
+			"modified_at": now,
+		}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update albums in database"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully assigned %d images to album %s", len(input.ImageIDs), input.AlbumName)})
+}

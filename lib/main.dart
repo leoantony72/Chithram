@@ -15,6 +15,9 @@ import 'ui/pages/album_details_page.dart';
 import 'ui/pages/cloud_album_details_page.dart';
 import 'ui/pages/map_page.dart';
 import 'ui/pages/settings_page.dart';
+import 'ui/pages/places_page.dart';
+import 'ui/pages/place_details_page.dart';
+import 'ui/pages/place_grid_page.dart';
 import 'screens/auth_screen.dart';
 import 'models/gallery_item.dart';
 
@@ -71,6 +74,14 @@ final GoRouter _router = GoRouter(
             ),
           ],
         ),
+        StatefulShellBranch(
+          routes: <RouteBase>[
+            GoRoute(
+              path: '/places',
+              builder: (BuildContext context, GoRouterState state) => const PlacesPage(),
+            ),
+          ],
+        ),
       ],
     ),
     GoRoute(
@@ -92,6 +103,21 @@ final GoRouter _router = GoRouter(
       },
     ),
 
+    GoRoute(
+      path: '/place_details',
+      builder: (context, state) {
+        final city = state.uri.queryParameters['city']!;
+        return PlaceDetailsPage(city: city);
+      },
+    ),
+
+    GoRoute(
+      path: '/place_grid',
+      builder: (context, state) {
+        final city = state.uri.queryParameters['city']!;
+        return PlaceGridPage(city: city);
+      },
+    ),
 
     GoRoute(
       path: '/person_details',

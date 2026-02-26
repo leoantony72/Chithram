@@ -14,8 +14,9 @@ import 'package:sodium_libs/sodium_libs_sumo.dart';
 class RemoteThumbnailWidget extends StatefulWidget {
   final RemoteImage image;
   final VoidCallback? onTap;
+  final bool isHighRes;
 
-  const RemoteThumbnailWidget({super.key, required this.image, this.onTap});
+  const RemoteThumbnailWidget({super.key, required this.image, this.onTap, this.isHighRes = false});
 
   @override
   State<RemoteThumbnailWidget> createState() => _RemoteThumbnailWidgetState();
@@ -36,10 +37,12 @@ class _RemoteThumbnailWidgetState extends State<RemoteThumbnailWidget> {
     // Prevent concurrent loads or reload if already loaded
     if (_bytes != null) return;
     
-    final cached = ThumbnailCache().getMemory(widget.image.imageId);
-    if (cached != null) {
-      if (mounted) setState(() => _bytes = cached);
-      return;
+    if (!widget.isHighRes) {
+      final cached = ThumbnailCache().getMemory(widget.image.imageId);
+      if (cached != null) {
+        if (mounted) setState(() => _bytes = cached);
+        return;
+      }
     }
 
     if (mounted) setState(() => _isLoading = true);
@@ -61,10 +64,16 @@ class _RemoteThumbnailWidgetState extends State<RemoteThumbnailWidget> {
       var url = widget.image.thumb256Url;
       if (url.isEmpty) url = widget.image.thumb64Url;
 
+      if (widget.isHighRes && widget.image.originalUrl.isNotEmpty) {
+          url = widget.image.originalUrl;
+      }
+
       if (url.isNotEmpty) {
         final data = await BackupService().fetchAndDecryptFromUrl(url, key);
         if (mounted && data != null) {
-          ThumbnailCache().putMemory(widget.image.imageId, data);
+          if (!widget.isHighRes) {
+             ThumbnailCache().putMemory(widget.image.imageId, data);
+          }
           setState(() => _bytes = data);
         }
       }

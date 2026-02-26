@@ -14,10 +14,12 @@ class ScaffoldWithNavBar extends StatelessWidget {
     return Scaffold(
       body: navigationShell,
       bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
         items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(icon: Icon(Icons.photo), label: 'Photos'),
           BottomNavigationBarItem(icon: Icon(Icons.people), label: 'People'),
           BottomNavigationBarItem(icon: Icon(Icons.photo_album), label: 'Albums'),
+          BottomNavigationBarItem(icon: Icon(Icons.flight_takeoff), label: 'Journeys'),
         ],
         currentIndex: navigationShell.currentIndex,
         onTap: (int index) => _onTap(context, index),

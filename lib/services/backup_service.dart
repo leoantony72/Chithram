@@ -807,6 +807,34 @@ class BackupService {
     }
   }
 
+  /// Updates the assigned album for specified cloud images.
+  Future<bool> updateCloudAlbum(String userId, List<String> imageIds, String albumName) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/images/album?user_id=$userId');
+      final requestBody = jsonEncode({
+        'image_ids': imageIds,
+        'album_name': albumName,
+      });
+
+      final response = await http.put(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: requestBody,
+      );
+
+      if (response.statusCode == 200) {
+        print('BackupService: Successfully updated album for ${imageIds.length} images.');
+        return true;
+      } else {
+        print('BackupService: Failed to update album. Code: ${response.statusCode}, Body: ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      print('BackupService: Error during updateCloudAlbum: $e');
+      return false;
+    }
+  }
+
   Future<bool> downloadFaceDatabase({bool inMemoryOnly = false}) async {
       final session = await _auth.loadSession();
       if (session == null) return false;

@@ -74,6 +74,13 @@ class DatabaseService {
         await db.execute('''
           CREATE TABLE backup_log (file_path TEXT PRIMARY KEY, status TEXT, timestamp INTEGER)
         ''');
+
+        await db.execute('''
+          CREATE TABLE journey_covers (
+            city TEXT PRIMARY KEY,
+            image_id TEXT NOT NULL
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
          if (oldVersion < 4) {
@@ -105,8 +112,18 @@ class DatabaseService {
                await db.execute('ALTER TABLE faces ADD COLUMN fl_trained INTEGER DEFAULT 0');
             } catch (_) {}
           }
+          if (oldVersion < 9) {
+            try {
+               await db.execute('''
+                 CREATE TABLE IF NOT EXISTS journey_covers (
+                   city TEXT PRIMARY KEY,
+                   image_id TEXT NOT NULL
+                 )
+               ''');
+            } catch (_) {}
+          }
       },
-      version: 8,
+      version: 9,
     );
   }
 
@@ -137,6 +154,19 @@ class DatabaseService {
     final db = await database;
     final res = await db.query('backup_log', where: 'file_path = ? AND status = ?', whereArgs: [path, 'UPLOADED']);
     return res.isNotEmpty;
+  }
+
+  // --- Journey Covers ---
+  Future<void> setJourneyCover(String city, String imageId) async {
+    final db = await database;
+    await db.insert('journey_covers', {'city': city, 'image_id': imageId}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<String?> getJourneyCover(String city) async {
+    final db = await database;
+    final res = await db.query('journey_covers', where: 'city = ?', whereArgs: [city]);
+    if (res.isNotEmpty) return res.first['image_id'] as String;
+    return null;
   }
 
   // --- Face Operations ---

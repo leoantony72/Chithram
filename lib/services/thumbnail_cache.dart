@@ -23,24 +23,24 @@ class ThumbnailCache {
   Directory? _cacheDir;
   final Set<String> _diskCacheKeys = {};
   bool _isInitialized = false;
+  bool _isInitStarted = false;
   final Completer<void> _initCompleter = Completer<void>();
 
   // Init method to prepare disk directory and index
   Future<void> init() async {
     if (_isInitialized) return;
-    if (_initCompleter.isCompleted) return;
     
-    if (_cacheDir == null && !_initCompleter.isCompleted) {
-    } else {
-        return _initCompleter.future;
+    if (_isInitStarted) {
+       await _initCompleter.future;
+       return;
     }
+    
+    _isInitStarted = true;
 
     try {
       if (kIsWeb) {
         _isInitialized = true;
-        if (!_initCompleter.isCompleted) {
-          _initCompleter.complete();
-        }
+        _initCompleter.complete();
         return;
       }
       final root = await getApplicationSupportDirectory();
@@ -50,9 +50,7 @@ class ThumbnailCache {
       }
       
       _isInitialized = true;
-      if (!_initCompleter.isCompleted) {
-        _initCompleter.complete();
-      }
+      _initCompleter.complete();
       debugPrint("ThumbnailCache initialized at: ${_cacheDir!.path}");
       
       // Load index immediately
@@ -60,9 +58,8 @@ class ThumbnailCache {
 
     } catch (e) {
       debugPrint("ThumbnailCache init error: $e");
-      if (!_initCompleter.isCompleted) {
-        _initCompleter.completeError(e);
-      }
+      _isInitStarted = false;
+      _initCompleter.completeError(e);
     }
   }
 

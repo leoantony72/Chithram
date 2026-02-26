@@ -12,6 +12,7 @@ import '../models/photo_group.dart';
 import '../services/backup_service.dart';
 import '../services/auth_service.dart';
 import '../services/database_service.dart';
+import '../services/places_service.dart';
 import 'package:exif/exif.dart';
 
 import '../models/gallery_item.dart';
@@ -314,6 +315,62 @@ class PhotoProvider with ChangeNotifier {
       return PhotoGroup(date: entry.key, items: entry.value);
     }).toList();
     _groupedByYear.sort((a, b) => b.date.compareTo(a.date));
+
+    // 4. Group by Place (Async due to Geocoding)
+    _groupPlacesAsync();
+  }
+
+  Map<String, List<GalleryItem>> _placesVisited = {};
+  Map<String, List<GalleryItem>> get placesVisited => _placesVisited;
+
+  Future<void> _groupPlacesAsync() async {
+    final Map<String, List<GalleryItem>> tempPlaces = {};
+    
+    for (var item in _allItems) {
+       latlong.LatLng? loc;
+       if (item.type == GalleryItemType.local) {
+          loc = _locationCache[item.local!.id];
+          if (loc == null && (item.local!.latitude ?? 0) != 0) {
+             loc = latlong.LatLng(item.local!.latitude!, item.local!.longitude!);
+          }
+       } else if (item.type == GalleryItemType.remote) {
+          if (item.remote!.latitude != 0) {
+             loc = latlong.LatLng(item.remote!.latitude, item.remote!.longitude);
+          }
+       }
+
+       if (loc != null) {
+          final place = await PlacesService().getPlaceName(loc.latitude, loc.longitude);
+          if (place != null) {
+             if (!tempPlaces.containsKey(place.city)) {
+                tempPlaces[place.city] = [];
+             }
+             tempPlaces[place.city]!.add(item);
+          }
+       }
+    }
+
+    // Apply custom covers from database
+    for (var city in tempPlaces.keys) {
+      final customCoverId = await DatabaseService().getJourneyCover(city);
+      if (customCoverId != null) {
+        final photos = tempPlaces[city]!;
+        final coverIndex = photos.indexWhere((item) => item.id == customCoverId);
+        if (coverIndex > 0) { // If it exists and isn't already first
+           final coverItem = photos.removeAt(coverIndex);
+           photos.insert(0, coverItem);
+        }
+      }
+    }
+
+    _placesVisited = tempPlaces;
+    notifyListeners();
+  }
+
+  Future<void> setJourneyCover(String city, GalleryItem coverItem) async {
+     await DatabaseService().setJourneyCover(city, coverItem.id);
+     // Re-run grouping to apply the new cover sorting
+     await _groupPlacesAsync();
   }
 
   // --- LOCATION SCANNING LOGIC ---
@@ -693,5 +750,93 @@ class PhotoProvider with ChangeNotifier {
        _isLoading = false;
        notifyListeners();
     }
+  }
+
+  /// Moves selected items to the target album. 
+  /// For Cloud items, simply changes the label.
+  /// For Local items, performs a native OS Copy-then-Delete to simulate a move.
+  Future<String?> addSelectedToAlbum(List<GalleryItem> selectedItems, AssetPathEntity? localTarget, String? cloudTarget) async {
+     if (selectedItems.isEmpty) return null;
+     if (localTarget == null && cloudTarget == null) return null;
+     
+     _isLoading = true;
+     notifyListeners();
+     
+     try {
+         final session = await AuthService().loadSession();
+         final username = session?['username'] as String?;
+         
+         // 1. Process Cloud Items (if we have a cloud target and users are logged in)
+         if (username != null && cloudTarget != null) {
+            final List<String> cloudIdsToUpdate = [];
+            for (final item in selectedItems) {
+               if (item.type == GalleryItemType.remote) {
+                  cloudIdsToUpdate.add(item.remote!.imageId);
+               } else if (item.type == GalleryItemType.local) {
+                  final cloudEquiv = _remoteImages.firstWhereOrNull((r) => r.sourceId == item.id);
+                  if (cloudEquiv != null) {
+                     cloudIdsToUpdate.add(cloudEquiv.imageId);
+                  }
+               }
+            }
+            
+            if (cloudIdsToUpdate.isNotEmpty) {
+               final success = await BackupService().updateCloudAlbum(username, cloudIdsToUpdate, cloudTarget);
+               if (success) {
+                  for (int i = 0; i < _remoteImages.length; i++) {
+                     if (cloudIdsToUpdate.contains(_remoteImages[i].imageId)) {
+                        final old = _remoteImages[i];
+                        _remoteImages[i] = RemoteImage(
+                           imageId: old.imageId, userId: old.userId, album: cloudTarget,
+                           width: old.width, height: old.height, size: old.size,
+                           latitude: old.latitude, longitude: old.longitude,
+                           originalUrl: old.originalUrl, thumb256Url: old.thumb256Url, thumb64Url: old.thumb64Url,
+                           sourceId: old.sourceId, createdAt: old.createdAt, isDeleted: old.isDeleted
+                        );
+                     }
+                  }
+               }
+            }
+         }
+         
+         // 2. Process Local OS Items (if we have an OS target)
+         if (localTarget != null) {
+            final List<AssetEntity> localAssets = [];
+            for (final item in selectedItems) {
+               if (item.type == GalleryItemType.local && item.local != null) {
+                  localAssets.add(item.local!);
+               }
+            }
+            
+            if (localAssets.isNotEmpty && !kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+               for (final asset in localAssets) {
+                   // A true Move in OS MediaStores requires copying to target, then deleting original.
+                   final copiedAsset = await PhotoManager.editor.copyAssetToPath(asset: asset, pathEntity: localTarget);
+                   if (copiedAsset != null) {
+                       // Delete original
+                       await PhotoManager.editor.deleteWithIds([asset.id]);
+                       // Remove old from our in-memory un-grouped cache
+                       _allAssets.removeWhere((a) => a.id == asset.id);
+                       // Add the new one so the grid doesn't blink out
+                       _allAssets.insert(0, copiedAsset);
+                   }
+               }
+            }
+         }
+         
+         // Regroup UI
+         _groupAssets();
+         return null; // Success
+     } catch (e) {
+         print("Error adding to album: $e");
+         final errStr = e.toString();
+         if (errStr.contains("allowed directories are")) {
+            return "Android OS restricts moving images to this folder. Please choose DCIM or Pictures.";
+         }
+         return "Failed to move photos: $errStr";
+     } finally {
+         _isLoading = false;
+         notifyListeners();
+     }
   }
 }

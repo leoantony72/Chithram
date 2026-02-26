@@ -14,6 +14,7 @@ class ThumbnailWidget extends StatefulWidget {
   final ValueListenable<bool>? isFastScrolling;
   final String? heroTagPrefix;
   final VoidCallback? onTap;
+  final bool isHighRes;
   
   const ThumbnailWidget({
     super.key, 
@@ -21,6 +22,7 @@ class ThumbnailWidget extends StatefulWidget {
     this.isFastScrolling,
     this.heroTagPrefix,
     this.onTap,
+    this.isHighRes = false,
   });
 
   @override
@@ -57,10 +59,14 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
       });
     } else {
       _showImage = true;
-      // Try synchronous memory load first for instant render
-      _bytes = ThumbnailCache().getMemory(widget.entity.id);
-      if (_bytes == null) {
+      if (widget.isHighRes) {
          _loadThumbnail();
+      } else {
+        // Try synchronous memory load first for instant render
+        _bytes = ThumbnailCache().getMemory(widget.entity.id);
+        if (_bytes == null) {
+           _loadThumbnail();
+        }
       }
     }
   }
@@ -97,6 +103,22 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
     if (_isLoading) return;
     
     _isLoading = true;
+
+    if (widget.isHighRes) {
+       try {
+         final bytes = await widget.entity.thumbnailDataWithSize(
+            const ThumbnailSize.square(1000), 
+            quality: 100 
+         );
+         if (mounted && bytes != null) {
+            setState(() => _bytes = bytes);
+         }
+       } catch (_) {}
+       finally {
+         if (mounted) setState(() => _isLoading = false);
+       }
+       return;
+    }
 
     // 1. Check Memory again (in case it populated elsewhere)
     final mem = ThumbnailCache().getMemory(widget.entity.id);

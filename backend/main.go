@@ -66,6 +66,7 @@ func main() {
 	// Image Endpoints
 	r.DELETE("/images", controllers.DeleteImages)
 	r.PUT("/images/location", controllers.UpdateImageLocation)
+	r.PUT("/images/album", controllers.UpdateImageAlbum)
 	r.GET("/albums", controllers.GetAlbums)
 	r.GET("/images", controllers.ListImages)
 	r.GET("/images/:id", controllers.GetSingleImage)

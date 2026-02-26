@@ -21,6 +21,7 @@ import '../../services/backup_service.dart';
 import '../../services/auth_service.dart';
 import 'location_picker_page.dart';
 import 'package:latlong2/latlong.dart' as latlong;
+import '../widgets/album_picker_dialog.dart';
 
 class AllPhotosPage extends StatefulWidget {
   const AllPhotosPage({super.key});
@@ -735,7 +736,39 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            _buildActionIcon(Icons.auto_awesome_mosaic_rounded, 'Album', () {}),
+                            _buildActionIcon(Icons.auto_awesome_mosaic_rounded, 'Album', () async {
+                               final sp = Provider.of<SelectionProvider>(context, listen: false);
+                               final pp = Provider.of<PhotoProvider>(context, listen: false);
+                               final items = List<GalleryItem>.from(sp.selectedItems);
+                               sp.clearSelection();
+                               
+                               // Gather local albums + distinct remote albums
+                               final localAlbums = pp.paths;
+                               final Set<String> cloudAlbumNames = {};
+                               for (var remote in pp.allItems.where((e) => e.type == GalleryItemType.remote)) {
+                                  if (remote.remote!.album.isNotEmpty) {
+                                     cloudAlbumNames.add(remote.remote!.album);
+                                  }
+                               }
+
+                               final result = await showDialog<AlbumSelectionResult>(
+                                  context: context,
+                                  builder: (ctx) => AlbumPickerDialog(
+                                     localAlbums: localAlbums,
+                                     existingCloudAlbums: cloudAlbumNames.toList()..sort(),
+                                  )
+                               );
+                               if (result != null) {
+                                  final String? error = await pp.addSelectedToAlbum(items, result.localAlbum, result.cloudAlbumName);
+                                  if (error != null && mounted) {
+                                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                        content: Text(error, style: const TextStyle(color: Colors.white)),
+                                        backgroundColor: Colors.redAccent,
+                                        duration: const Duration(seconds: 4),
+                                     ));
+                                  }
+                               }
+                            }),
                             const SizedBox(width: 8),
                             _buildActionIcon(Icons.pin_drop_rounded, 'Location', () async {
                                final sp = Provider.of<SelectionProvider>(context, listen: false);
