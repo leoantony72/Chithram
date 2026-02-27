@@ -593,8 +593,10 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
            trailing: const Icon(Icons.open_in_new, color: Colors.white30, size: 20),
            onTap: () async {
               final uri = Uri.parse(article.link);
-              if (await canLaunchUrl(uri)) {
-                 await launchUrl(uri);
+              try {
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
+              } catch (e) {
+                debugPrint("Could not launch $uri");
               }
            },
         ),

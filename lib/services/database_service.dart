@@ -81,6 +81,14 @@ class DatabaseService {
             image_id TEXT NOT NULL
           )
         ''');
+
+        await db.execute('''
+          CREATE TABLE journey_cache (
+            id TEXT PRIMARY KEY,
+            data TEXT NOT NULL,
+            timestamp INTEGER NOT NULL
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
          if (oldVersion < 4) {
@@ -122,8 +130,19 @@ class DatabaseService {
                ''');
             } catch (_) {}
           }
+          if (oldVersion < 10) {
+            try {
+               await db.execute('''
+                 CREATE TABLE IF NOT EXISTS journey_cache (
+                   id TEXT PRIMARY KEY,
+                   data TEXT NOT NULL,
+                   timestamp INTEGER NOT NULL
+                 )
+               ''');
+            } catch (_) {}
+          }
       },
-      version: 9,
+      version: 10,
     );
   }
 
@@ -167,6 +186,38 @@ class DatabaseService {
     final res = await db.query('journey_covers', where: 'city = ?', whereArgs: [city]);
     if (res.isNotEmpty) return res.first['image_id'] as String;
     return null;
+  }
+
+  // --- Journey Cache ---
+  Future<void> saveJourneyCache(String jsonData) async {
+    final db = await database;
+    await db.insert('journey_cache', {
+      'id': 'main',
+      'data': jsonData,
+      'timestamp': DateTime.now().millisecondsSinceEpoch
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, dynamic>?> getJourneyCache() async {
+    final db = await database;
+    final res = await db.query('journey_cache', where: 'id = ?', whereArgs: ['main']);
+    if (res.isNotEmpty) {
+      final timestamp = res.first['timestamp'] as int;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      // 4 hours validity threshold
+      if (now - timestamp < 14400000) {
+        return {'data': res.first['data'], 'timestamp': timestamp};
+      } else {
+        // Invalidate by wiping it out
+        await db.delete('journey_cache', where: 'id = ?', whereArgs: ['main']);
+      }
+    }
+    return null;
+  }
+
+  Future<void> invalidateJourneyCache() async {
+    final db = await database;
+    await db.delete('journey_cache', where: 'id = ?', whereArgs: ['main']);
   }
 
   // --- Face Operations ---

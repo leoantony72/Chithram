@@ -324,6 +324,50 @@ class PhotoProvider with ChangeNotifier {
   Map<String, List<GalleryItem>> get placesVisited => _placesVisited;
 
   Future<void> _groupPlacesAsync() async {
+    final cacheObj = await DatabaseService().getJourneyCache();
+    if (cacheObj != null) {
+      try {
+        final Map<String, dynamic> parsed = jsonDecode(cacheObj['data']);
+        final Map<String, List<GalleryItem>> tempPlaces = {};
+        
+        final Map<String, GalleryItem> itemsMap = {
+          for (var item in _allItems) item.id: item
+        };
+
+        for (var city in parsed.keys) {
+          final List<dynamic> idList = parsed[city];
+          final List<GalleryItem> matched = [];
+          for (var id in idList) {
+            if (itemsMap.containsKey(id)) {
+               matched.add(itemsMap[id]!);
+            }
+          }
+          if (matched.isNotEmpty) {
+             tempPlaces[city] = matched;
+          }
+        }
+        
+        // Apply custom covers
+        for (var city in tempPlaces.keys) {
+          final customCoverId = await DatabaseService().getJourneyCover(city);
+          if (customCoverId != null) {
+            final photos = tempPlaces[city]!;
+            final coverIndex = photos.indexWhere((item) => item.id == customCoverId);
+            if (coverIndex > 0) {
+               final coverItem = photos.removeAt(coverIndex);
+               photos.insert(0, coverItem);
+            }
+          }
+        }
+        
+        _placesVisited = tempPlaces;
+        notifyListeners();
+        return;
+      } catch (e) {
+        debugPrint("Error reading journey cache: $e");
+      }
+    }
+
     final Map<String, List<GalleryItem>> tempPlaces = {};
     
     for (var item in _allItems) {
@@ -349,6 +393,13 @@ class PhotoProvider with ChangeNotifier {
           }
        }
     }
+
+    // Save to Cache
+    final Map<String, List<String>> toCache = {};
+    tempPlaces.forEach((city, list) {
+       toCache[city] = list.map((e) => e.id).toList();
+    });
+    await DatabaseService().saveJourneyCache(jsonEncode(toCache));
 
     // Apply custom covers from database
     for (var city in tempPlaces.keys) {
@@ -742,6 +793,7 @@ class PhotoProvider with ChangeNotifier {
           _locationCache[item.id] = latlong.LatLng(lat, lng);
        }
        
+       await DatabaseService().invalidateJourneyCache();
        // Re-trigger Grouping to pass new props down
        _groupAssets();
     } catch (e) {
