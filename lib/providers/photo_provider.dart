@@ -39,6 +39,8 @@ class PhotoProvider with ChangeNotifier {
   
   bool _hasPermission = false;
   bool _isLoading = false;
+  bool _isJourneyProcessing = false;
+  double _journeyProgress = 0.0;
   
   // Expose status for UI
   final ValueNotifier<String?> backgroundStatus = ValueNotifier(null);
@@ -59,6 +61,8 @@ class PhotoProvider with ChangeNotifier {
   
   bool get hasPermission => _hasPermission;
   bool get isLoading => _isLoading;
+  bool get isJourneyProcessing => _isJourneyProcessing;
+  double get journeyProgress => _journeyProgress;
   
   Future<void> fetchRemotePhotos() async {
     final session = await AuthService().loadSession();
@@ -323,8 +327,16 @@ class PhotoProvider with ChangeNotifier {
   Map<String, List<GalleryItem>> _placesVisited = {};
   Map<String, List<GalleryItem>> get placesVisited => _placesVisited;
 
+  int _journeyProcessingId = 0;
+
   Future<void> _groupPlacesAsync() async {
-    final cacheObj = await DatabaseService().getJourneyCache();
+    final int processId = ++_journeyProcessingId;
+    _isJourneyProcessing = true;
+    _journeyProgress = 0.0;
+    notifyListeners();
+    
+    try {
+      final cacheObj = await DatabaseService().getJourneyCache();
     if (cacheObj != null) {
       try {
         final Map<String, dynamic> parsed = jsonDecode(cacheObj['data']);
@@ -360,9 +372,26 @@ class PhotoProvider with ChangeNotifier {
           }
         }
         
-        _placesVisited = tempPlaces;
-        notifyListeners();
-        return;
+        // Anti-poison mechanism: If cache is completely empty but we have geotagged photos, ignore the cache
+        final hasGeotaggedPhotos = _allItems.any((item) => 
+            (item.type == GalleryItemType.local && ((item.local!.latitude ?? 0) != 0 || _locationCache.containsKey(item.local!.id))) || 
+            (item.type == GalleryItemType.remote && item.remote!.latitude != 0)
+        );
+
+        if (tempPlaces.isEmpty && hasGeotaggedPhotos) {
+            debugPrint("Cache is empty but geotagged photos exist. Ignoring cache and recalculating.");
+            await DatabaseService().invalidateJourneyCache();
+            // Do NOT return here. Let it fall through to the recalculation loop.
+        } else {
+            _placesVisited = tempPlaces;
+            _journeyProgress = 1.0;
+            
+            if (processId == _journeyProcessingId) {
+               _isJourneyProcessing = false;
+               notifyListeners();
+            }
+            return;
+        }
       } catch (e) {
         debugPrint("Error reading journey cache: $e");
       }
@@ -370,6 +399,9 @@ class PhotoProvider with ChangeNotifier {
 
     final Map<String, List<GalleryItem>> tempPlaces = {};
     
+    // Group by coordinate first to minimize Geocoding API lookups
+    final Map<String, List<GalleryItem>> coordGroups = {};
+
     for (var item in _allItems) {
        latlong.LatLng? loc;
        if (item.type == GalleryItemType.local) {
@@ -384,22 +416,71 @@ class PhotoProvider with ChangeNotifier {
        }
 
        if (loc != null) {
-          final place = await PlacesService().getPlaceName(loc.latitude, loc.longitude);
-          if (place != null) {
-             if (!tempPlaces.containsKey(place.city)) {
-                tempPlaces[place.city] = [];
-             }
-             tempPlaces[place.city]!.add(item);
+          // Use coordinate rounded to 2 decimal places to bucket nearby photos
+          final String cacheKey = '${loc.latitude.toStringAsFixed(2)}_${loc.longitude.toStringAsFixed(2)}';
+          if (!coordGroups.containsKey(cacheKey)) {
+             coordGroups[cacheKey] = [];
           }
+          coordGroups[cacheKey]!.add(item);
        }
     }
 
-    // Save to Cache
-    final Map<String, List<String>> toCache = {};
-    tempPlaces.forEach((city, list) {
-       toCache[city] = list.map((e) => e.id).toList();
-    });
-    await DatabaseService().saveJourneyCache(jsonEncode(toCache));
+    int processedCount = 0;
+    final totalSteps = coordGroups.keys.length;
+    final keysToProcess = coordGroups.keys.toList();
+    bool hasApiError = false;
+
+    for (int i = 0; i < totalSteps; i++) {
+       if (processId != _journeyProcessingId) return; // Cancelled by newer run
+
+       final key = keysToProcess[i];
+       final items = coordGroups[key]!;
+       
+       // Just pick the location of the first item in the group
+       latlong.LatLng? groupLoc;
+       final firstItem = items.first;
+       if (firstItem.type == GalleryItemType.local) {
+          groupLoc = _locationCache[firstItem.local!.id] ?? latlong.LatLng(firstItem.local!.latitude!, firstItem.local!.longitude!);
+       } else {
+          groupLoc = latlong.LatLng(firstItem.remote!.latitude, firstItem.remote!.longitude);
+       }
+
+       try {
+         final place = await PlacesService().getPlaceName(groupLoc.latitude, groupLoc.longitude);
+         if (place != null) {
+            if (!tempPlaces.containsKey(place.city)) {
+               tempPlaces[place.city] = [];
+            }
+            tempPlaces[place.city]!.addAll(items);
+         }
+       } catch (e) {
+         hasApiError = true;
+         print("Geocoding API block hit - will not cache incomplete results");
+       }
+       
+       processedCount++;
+       _journeyProgress = processedCount / (totalSteps > 0 ? totalSteps : 1);
+       notifyListeners();
+
+       // Small delay to prevent rate limit blocks on nominatim if we do actual requests
+       await Future.delayed(const Duration(milliseconds: 50));
+    }
+
+    if (processId != _journeyProcessingId) return;
+
+    // Sort items by date within each place
+    for (var city in tempPlaces.keys) {
+      tempPlaces[city]!.sort((a, b) => b.date.compareTo(a.date));
+    }
+
+    if (!hasApiError) {
+      // Save to Cache ONLY if we successfully checked everything
+      final Map<String, List<String>> toCache = {};
+      tempPlaces.forEach((city, list) {
+         toCache[city] = list.map((e) => e.id).toList();
+      });
+      await DatabaseService().saveJourneyCache(jsonEncode(toCache));
+    }
 
     // Apply custom covers from database
     for (var city in tempPlaces.keys) {
@@ -415,7 +496,13 @@ class PhotoProvider with ChangeNotifier {
     }
 
     _placesVisited = tempPlaces;
-    notifyListeners();
+
+    } finally {
+      if (processId == _journeyProcessingId) {
+        _isJourneyProcessing = false;
+        notifyListeners();
+      }
+    }
   }
 
   Future<void> setJourneyCover(String city, GalleryItem coverItem) async {

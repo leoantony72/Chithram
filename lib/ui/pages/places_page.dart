@@ -35,6 +35,39 @@ class _PlacesPageState extends State<PlacesPage> {
       builder: (context, provider, child) {
         final places = provider.placesVisited;
 
+        if (provider.isJourneyProcessing && places.isEmpty) {
+          final progress = provider.journeyProgress;
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 250,
+                  height: 6,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(3),
+                    child: LinearProgressIndicator(
+                      value: progress > 0 ? progress : null,
+                      backgroundColor: Colors.white12,
+                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.white70),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  "Processing Journeys... ${(progress * 100).toInt()}%",
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  "Organizing your photos by location",
+                  style: TextStyle(color: Colors.white54, fontSize: 14),
+                ),
+              ],
+            ),
+          );
+        }
+
         if (places.isEmpty) {
           return const Center(
             child: Column(

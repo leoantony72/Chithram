@@ -204,8 +204,8 @@ class DatabaseService {
     if (res.isNotEmpty) {
       final timestamp = res.first['timestamp'] as int;
       final now = DateTime.now().millisecondsSinceEpoch;
-      // 4 hours validity threshold
-      if (now - timestamp < 14400000) {
+      // 1 day validity threshold (24 * 60 * 60 * 1000 = 86400000)
+      if (now - timestamp < 86400000) {
         return {'data': res.first['data'], 'timestamp': timestamp};
       } else {
         // Invalidate by wiping it out

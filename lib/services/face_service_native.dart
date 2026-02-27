@@ -142,8 +142,8 @@ class FaceService {
     try {
         final bytes = await originalImageFile.readAsBytes();
         
-        // Decode and Crop in background isolate
-        final result = await compute(_preprocessFace, _CropRequest(bytes, faceRect, leftEye, rightEye));
+        // Decode and Crop on main thread (Compute isolate occasionally throws "Task didn't run" on some Android setups)
+        final result = await _preprocessFace(_CropRequest(bytes, faceRect, leftEye, rightEye));
         
         if (result == null) return null;
 

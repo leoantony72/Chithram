@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -510,6 +511,117 @@ class _PeoplePageState extends State<PeoplePage> {
       _loadClusters();
   }
 
+  void _triggerTrain() {
+      setState(() {
+        _isTraining = true;
+        _trainingProgress = 0.0;
+        _statusMessage = 'Initializing Training...';
+      });
+      FederatedLearningService().trainAndUpload(onProgress: (p, s) {
+        if (mounted) {
+            setState(() {
+              if (p >= 0) _trainingProgress = p;
+              _statusMessage = s;
+            });
+        }
+      }).then((_) {
+        if (mounted) {
+            setState(() {
+              _isTraining = false;
+            });
+        }
+      });
+  }
+
+  Future<void> _showCustomMenu(BuildContext context) async {
+    showGeneralDialog(
+      context: context,
+      pageBuilder: (ctx, a1, a2) => const SizedBox(),
+      barrierDismissible: true,
+      barrierLabel: "Menu",
+      barrierColor: Colors.black.withOpacity(0.2),
+      transitionDuration: const Duration(milliseconds: 300),
+      transitionBuilder: (ctx, anim1, anim2, child) {
+        return Stack(
+          children: [
+            Positioned(
+              top: kToolbarHeight + 8,
+              right: 16,
+              width: 260,
+              child: ScaleTransition(
+                scale: CurvedAnimation(parent: anim1, curve: Curves.easeOutBack),
+                alignment: Alignment.topRight,
+                child: FadeTransition(
+                  opacity: anim1,
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.08),
+                            borderRadius: BorderRadius.circular(24),
+                            border: Border.all(color: Colors.white.withOpacity(0.15)),
+                            boxShadow: const [
+                              BoxShadow(color: Colors.black54, blurRadius: 40, offset: Offset(0, 10))
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _MenuActionItem(
+                                icon: Icons.model_training_rounded, 
+                                label: 'Improve Models (AI Train)',
+                                iconColor: Colors.blueAccent,
+                                onTap: () { Navigator.pop(ctx); _triggerTrain(); }
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: Divider(height: 1, color: Colors.white.withOpacity(0.1)),
+                              ),
+                              _MenuActionItem(
+                                icon: Icons.cloud_download_rounded, 
+                                label: 'Restore AI from Cloud',
+                                onTap: () { Navigator.pop(ctx); _downloadDb(); }
+                              ),
+                              _MenuActionItem(
+                                icon: Icons.cloud_upload_rounded, 
+                                label: 'Backup AI to Cloud',
+                                onTap: () { Navigator.pop(ctx); _uploadDb(); }
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: Divider(height: 1, color: Colors.white.withOpacity(0.1)),
+                              ),
+                              _MenuActionItem(
+                                icon: Icons.data_object_rounded, 
+                                label: 'Export Vectors JSON',
+                                onTap: () { Navigator.pop(ctx); _exportFaceData(); }
+                              ),
+                              _MenuActionItem(
+                                icon: Icons.delete_forever_rounded, 
+                                label: 'Reset People Database',
+                                iconColor: Colors.redAccent,
+                                onTap: () { Navigator.pop(ctx); _resetDatabase(); }
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -519,50 +631,13 @@ class _PeoplePageState extends State<PeoplePage> {
         backgroundColor: Colors.black,
         elevation: 0,
         actions: [
-            PopupMenuButton<String>(
-              onSelected: (v) {
-                 if (v == 'export') _exportFaceData();
-                 if (v == 'clear_db') _resetDatabase();
-                 if (v == 'upload_db') _uploadDb();
-                 if (v == 'download_db') _downloadDb();
-                                   if (v == 'train') {
-                     setState(() {
-                        _isTraining = true;
-                        _trainingProgress = 0.0;
-                        _statusMessage = 'Initializing Training...';
-                     });
-                     FederatedLearningService().trainAndUpload(onProgress: (p, s) {
-                        if (mounted) {
-                           setState(() {
-                              if (p >= 0) _trainingProgress = p;
-                              _statusMessage = s;
-                           });
-                        }
-                     }).then((_) {
-                        if (mounted) {
-                           setState(() {
-                              _isTraining = false;
-                           });
-                        }
-                     });
-                  }
-              },
-              itemBuilder: (context) => [
-                 const PopupMenuItem(value: 'train', child: Row(
-                    children: [
-                       Icon(Icons.model_training_rounded, color: Colors.blueAccent),
-                       SizedBox(width: 8),
-                       Text('Improve Models (AI Training)'),
-                    ],
-                 )),
-                 const PopupMenuDivider(),
-                 const PopupMenuItem(value: 'download_db', child: Text('Restore AI from Cloud')),
-                 const PopupMenuItem(value: 'upload_db', child: Text('Backup AI to Cloud')),
-                 const PopupMenuDivider(),
-                 const PopupMenuItem(value: 'export', child: Text('Export Vectors JSON')),
-                 const PopupMenuItem(value: 'clear_db', child: Text('Reset People Database')),
-              ],
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: IconButton(
+              icon: const Icon(Icons.more_horiz_rounded, color: Colors.white),
+              onPressed: () => _showCustomMenu(context),
             ),
+          ),
           if (_isScanning || _isTraining)
             Center(
               child: Padding(
@@ -724,4 +799,46 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 } // End of _PeoplePageState
 
+class _MenuActionItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final Color iconColor;
+
+  const _MenuActionItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.iconColor = Colors.white70,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      splashColor: Colors.white.withOpacity(0.1),
+      highlightColor: Colors.white.withOpacity(0.05),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        child: Row(
+          children: [
+            Icon(icon, color: iconColor, size: 20),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.2,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
