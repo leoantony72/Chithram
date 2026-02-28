@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:sodium_libs/sodium_libs_sumo.dart';
@@ -68,7 +70,15 @@ class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKee
       // But for memory safety, maybe delay? 
       // Actually, standard behavior is fetch.
       // RemotePhotoViewer is built by PageView builder, so it's built when needed.
-      if (widget.remote.originalUrl.isNotEmpty) {
+      bool isUnsupported = false;
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
+         final urlPath = widget.remote.originalUrl.toLowerCase().split('?').first;
+         if (urlPath.endsWith('.heic') || urlPath.endsWith('.heif') || urlPath.endsWith('.raw') || urlPath.endsWith('.dng')) {
+            isUnsupported = true;
+         }
+      }
+
+      if (widget.remote.originalUrl.isNotEmpty && !isUnsupported) {
         final oBytes = await BackupService().fetchAndDecryptFromUrl(widget.remote.originalUrl, key);
         if (mounted) {
           if (oBytes != null) {

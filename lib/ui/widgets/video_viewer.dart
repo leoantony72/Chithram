@@ -103,7 +103,11 @@ class _VideoViewerState extends State<VideoViewer> {
         looping: true,
         aspectRatio: _videoController!.value.aspectRatio,
         placeholder: _thumbnailBytes != null 
-            ? Image.memory(_thumbnailBytes!, fit: BoxFit.contain)
+            ? Image.memory(
+                _thumbnailBytes!, 
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) => const Center(child: Icon(Icons.broken_image, color: Colors.white24)),
+              )
             : const Center(child: CircularProgressIndicator()),
         errorBuilder: (context, errorMessage) {
           return Center(child: Text(errorMessage, style: const TextStyle(color: Colors.white)));
@@ -133,6 +137,7 @@ class _VideoViewerState extends State<VideoViewer> {
                fit: BoxFit.contain,
                width: double.infinity,
                height: double.infinity,
+               errorBuilder: (context, error, stackTrace) => const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 64)),
              ),
              // Show a play icon or loader if it's supposed to be active but loading
              if (widget.isActive)

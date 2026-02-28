@@ -51,6 +51,25 @@ class RemoteImage {
       isDeleted: json['is_deleted'] == true || json['is_deleted'] == 1,
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'image_id': imageId,
+      'user_id': userId,
+      'album': album,
+      'width': width,
+      'height': height,
+      'size': size,
+      'latitude': latitude,
+      'longitude': longitude,
+      'original_url': originalUrl,
+      'thumb_256_url': thumb256Url,
+      'thumb_64_url': thumb64Url,
+      'source_id': sourceId,
+      'created_at': createdAt?.toIso8601String(),
+      'is_deleted': isDeleted,
+    };
+  }
 }
 
 class RemoteImageResponse {

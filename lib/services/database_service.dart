@@ -89,6 +89,19 @@ class DatabaseService {
             timestamp INTEGER NOT NULL
           )
         ''');
+
+        await db.execute('''
+          CREATE TABLE local_gallery_index (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            type_int INTEGER,
+            width INTEGER,
+            height INTEGER,
+            create_dt INTEGER,
+            modify_dt INTEGER,
+            relative_path TEXT
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
          if (oldVersion < 4) {
@@ -141,9 +154,56 @@ class DatabaseService {
                ''');
             } catch (_) {}
           }
+          if (oldVersion < 11) {
+            try {
+               await db.execute('''
+                 CREATE TABLE IF NOT EXISTS local_gallery_index (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    type_int INTEGER,
+                    width INTEGER,
+                    height INTEGER,
+                    create_dt INTEGER,
+                    modify_dt INTEGER,
+                    relative_path TEXT
+                 )
+               ''');
+            } catch (_) {}
+          }
       },
-      version: 10,
+      version: 11,
     );
+  }
+
+  // --- Local Gallery Index ---
+  Future<void> saveGalleryIndex(List<Map<String, dynamic>> items) async {
+    final db = await database;
+    Batch batch = db.batch();
+    for (var item in items) {
+       batch.insert('local_gallery_index', item, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  Future<void> clearGalleryIndex() async {
+    final db = await database;
+    await db.delete('local_gallery_index');
+  }
+
+  Future<List<Map<String, dynamic>>> getGalleryIndex({int limit = 500, int offset = 0}) async {
+    final db = await database;
+    return await db.query(
+       'local_gallery_index', 
+       orderBy: 'create_dt DESC', // Newest first
+       limit: limit, 
+       offset: offset
+    );
+  }
+
+  Future<int> getGalleryIndexCount() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT COUNT(*) as count FROM local_gallery_index');
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 
   // --- Backup Operations ---

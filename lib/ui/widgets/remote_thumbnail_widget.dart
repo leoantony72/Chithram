@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
@@ -64,7 +66,15 @@ class _RemoteThumbnailWidgetState extends State<RemoteThumbnailWidget> {
       var url = widget.image.thumb256Url;
       if (url.isEmpty) url = widget.image.thumb64Url;
 
-      if (widget.isHighRes && widget.image.originalUrl.isNotEmpty) {
+      bool isUnsupported = false;
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
+         final urlPath = widget.image.originalUrl.toLowerCase().split('?').first;
+         if (urlPath.endsWith('.heic') || urlPath.endsWith('.heif') || urlPath.endsWith('.raw') || urlPath.endsWith('.dng')) {
+            isUnsupported = true;
+         }
+      }
+
+      if (widget.isHighRes && widget.image.originalUrl.isNotEmpty && !isUnsupported) {
           url = widget.image.originalUrl;
       }
 
@@ -92,6 +102,13 @@ class _RemoteThumbnailWidgetState extends State<RemoteThumbnailWidget> {
         _bytes!,
         fit: BoxFit.cover,
         gaplessPlayback: true,
+        errorBuilder: (context, error, stackTrace) {
+           debugPrint("Image.memory codec error in remote widget: $error");
+           return Container(
+              color: Colors.grey[900],
+              child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 32)),
+           );
+        },
       );
     } else {
       content = Container(

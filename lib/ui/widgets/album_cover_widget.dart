@@ -61,6 +61,13 @@ class _AlbumCoverWidgetState extends State<AlbumCoverWidget> {
                _bytes!,
                fit: BoxFit.cover,
                gaplessPlayback: true,
+               errorBuilder: (context, error, stackTrace) {
+                  debugPrint("Image.memory codec error in album cover: $error");
+                  return Container(
+                     color: Colors.grey[900],
+                     child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24)),
+                  );
+               },
             ),
             Container(
                decoration: const BoxDecoration(

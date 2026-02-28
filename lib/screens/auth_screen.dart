@@ -1,5 +1,8 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../services/auth_service.dart';
+import '../services/api_config.dart';
 import '../services/auth_service.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -69,7 +72,7 @@ class _AuthScreenState extends State<AuthScreen> {
       success = keys != null;
       if (success) {
         // Handle successful login (e.g., store keys, navigate)
-        print('Login successful! Keys received: ${keys!.keys}');
+        print('Login successful! Keys received: ${keys.keys}');
          if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Login Successful! Redirecting...')),
@@ -116,7 +119,124 @@ class _AuthScreenState extends State<AuthScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(_isLogin ? 'Login' : 'Signup')),
+      appBar: AppBar(
+        title: Text(_isLogin ? 'Login' : 'Signup'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, color: Colors.white70),
+            tooltip: 'Configure Backend Server',
+            onPressed: () async {
+              final currentIp = await ApiConfig().getCurrentIp();
+              if (!mounted) return;
+              
+              final controller = TextEditingController(text: currentIp);
+              
+              showGeneralDialog(
+                context: context,
+                barrierColor: Colors.black.withValues(alpha: 0.5),
+                barrierDismissible: true,
+                barrierLabel: "ConfigDialog",
+                pageBuilder: (ctx, anim1, anim2) => Center(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: Container(
+                        width: 340,
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E1E1E), // Solid dark grey base
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(color: Colors.white10),
+                          boxShadow: const [
+                            BoxShadow(color: Colors.black54, blurRadius: 20, spreadRadius: 5),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.dns_rounded, color: Colors.blueAccent, size: 24),
+                                SizedBox(width: 12),
+                                Text(
+                                  'Backend Server',
+                                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Set the IPv4 address or domain where the backend is hosted.',
+                              style: TextStyle(color: Colors.white54, fontSize: 13),
+                            ),
+                            const SizedBox(height: 16),
+                            TextField(
+                              controller: controller,
+                              style: const TextStyle(color: Colors.white),
+                              decoration: InputDecoration(
+                                hintText: 'e.g. 192.168.1.5',
+                                hintStyle: const TextStyle(color: Colors.white30),
+                                filled: true,
+                                fillColor: Colors.white.withValues(alpha: 0.05),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx),
+                                  child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                                ),
+                                const SizedBox(width: 8),
+                                ElevatedButton(
+                                  onPressed: () async {
+                                    if (controller.text.isNotEmpty) {
+                                      await ApiConfig().setCustomIp(controller.text);
+                                      if (!context.mounted) return;
+                                      Navigator.pop(ctx);
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('Backend address set to ${controller.text}')),
+                                      );
+                                    }
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.blueAccent,
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                  child: const Text('Save'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                transitionBuilder: (ctx, anim1, anim2, child) {
+                  return Transform.scale(
+                    scale: Curves.easeOutBack.transform(anim1.value),
+                    child: FadeTransition(
+                      opacity: anim1,
+                      child: child,
+                    ),
+                  );
+                },
+                transitionDuration: const Duration(milliseconds: 300),
+              );
+            },
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),

@@ -201,7 +201,16 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
                                   child: Stack(
                                      fit: StackFit.expand,
                                      children: [
-                                        Image.file(file, fit: BoxFit.cover, cacheWidth: 600, filterQuality: FilterQuality.high),
+                                        Image.file(
+                                           file, 
+                                           fit: BoxFit.cover, 
+                                           cacheWidth: 600, 
+                                           filterQuality: FilterQuality.high,
+                                           errorBuilder: (context, error, stackTrace) => Container(
+                                              color: Colors.grey[900], 
+                                              child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24))
+                                           ),
+                                        ),
                                         Positioned(
                                            bottom: 4, right: 4,
                                            child: Container(
@@ -339,12 +348,16 @@ class _CoverPhotoSelectorSheetState extends State<_CoverPhotoSelectorSheet> {
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
                       child: thumbBytes != null && thumbBytes.isNotEmpty
-                          ? Image.memory(
-                              thumbBytes, 
-                              fit: BoxFit.cover,
-                              filterQuality: FilterQuality.low,
-                            )
-                          : Container(
+                              ? Image.memory(
+                                  thumbBytes, 
+                                  fit: BoxFit.cover,
+                                  filterQuality: FilterQuality.low,
+                                  errorBuilder: (context, error, stackTrace) => Container(
+                                      color: Colors.grey[800],
+                                      child: const Icon(Icons.broken_image, color: Colors.white54),
+                                  ),
+                                )
+                              : Container(
                               color: Colors.grey[800],
                               child: const Icon(Icons.person, color: Colors.white54),
                             ),
@@ -432,7 +445,15 @@ class _CloudPhotoTileState extends State<_CloudPhotoTile> {
        child: Stack(
           fit: StackFit.expand,
           children: [
-             Image.memory(_thumbBytes!, fit: BoxFit.cover, filterQuality: FilterQuality.high),
+             Image.memory(
+                _thumbBytes!, 
+                fit: BoxFit.cover, 
+                filterQuality: FilterQuality.high,
+                errorBuilder: (context, error, stackTrace) => Container(
+                   color: Colors.grey[900], 
+                   child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24))
+                ),
+             ),
              Positioned(
                 bottom: 4, right: 4,
                 child: Container(

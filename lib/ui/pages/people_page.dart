@@ -790,6 +790,10 @@ class _PeoplePageState extends State<PeoplePage> {
            filterQuality: FilterQuality.medium,
            gaplessPlayback: true,
            isAntiAlias: true,
+           errorBuilder: (context, error, stackTrace) => Container(
+               color: Colors.grey[800],
+               child: const Icon(Icons.broken_image, color: Colors.white54, size: 48)
+           ),
         );
     }
     return Container(

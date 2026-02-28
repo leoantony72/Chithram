@@ -120,96 +120,187 @@ class _PlacesPageState extends State<PlacesPage> {
                 ),
                 
                 Expanded(
-                  child: PageView.builder(
-                    controller: _pageController,
-                    itemCount: cityNames.length,
-                    itemBuilder: (context, index) {
-                      final city = cityNames[index];
-                      final photos = places[city]!;
-                      final coverPhoto = photos.first;
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final isDesktop = constraints.maxWidth > 800;
 
-                      return AnimatedBuilder(
-                        animation: _pageController,
-                        builder: (context, child) {
-                          double value = 1.0;
-                          if (_pageController.position.haveDimensions) {
-                            value = _pageController.page! - index;
-                            value = (1 - (value.abs() * 0.2)).clamp(0.0, 1.0);
-                          }
-                          
-                          return Center(
-                            child: SizedBox(
-                              height: Curves.easeOut.transform(value) * MediaQuery.of(context).size.height * 0.65,
-                              width: Curves.easeOut.transform(value) * MediaQuery.of(context).size.width,
-                              child: child,
-                            ),
-                          );
-                        },
-                        child: GestureDetector(
-                          onTap: () {
-                             // Will push details page later
-                             context.push('/place_details?city=${Uri.encodeComponent(city)}');
-                          },
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 20),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(30),
-                              boxShadow: const [
-                                BoxShadow(color: Colors.black54, blurRadius: 20, offset: Offset(0, 10))
-                              ]
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(30),
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  Hero(
-                                    tag: 'cover_$city',
-                                    child: _buildCoverImage(coverPhoto),
+                      if (isDesktop) {
+                        return GridView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: constraints.maxWidth > 1200 ? 5 : constraints.maxWidth > 1000 ? 4 : 3,
+                            childAspectRatio: 0.75,
+                            crossAxisSpacing: 24,
+                            mainAxisSpacing: 24,
+                          ),
+                          itemCount: cityNames.length,
+                          itemBuilder: (context, index) {
+                            final city = cityNames[index];
+                            final photos = places[city]!;
+                            final coverPhoto = photos.first;
+
+                            return GestureDetector(
+                              onTap: () {
+                                context.push('/place_details?city=${Uri.encodeComponent(city)}');
+                              },
+                              child: MouseRegion(
+                                cursor: SystemMouseCursors.click,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(24),
+                                    boxShadow: const [
+                                      BoxShadow(color: Colors.black45, blurRadius: 15, offset: Offset(0, 8))
+                                    ]
                                   ),
-                                  // Gradient Overlay
-                                  Container(
-                                    decoration: const BoxDecoration(
-                                      gradient: LinearGradient(
-                                        begin: Alignment.topCenter,
-                                        end: Alignment.bottomCenter,
-                                        colors: [Colors.transparent, Colors.black87],
-                                        stops: [0.5, 1.0],
-                                      ),
-                                    ),
-                                  ),
-                                  Positioned(
-                                    bottom: 30,
-                                    left: 24,
-                                    right: 24,
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(24),
+                                    child: Stack(
+                                      fit: StackFit.expand,
                                       children: [
-                                        Text(
-                                          city,
-                                          style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold, letterSpacing: -1),
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
+                                        Hero(
+                                          tag: 'cover_$city',
+                                          child: _buildCoverImage(coverPhoto),
                                         ),
-                                        const SizedBox(height: 8),
-                                        Row(
-                                          children: [
-                                            const Icon(Icons.photo_library, color: Colors.white70, size: 16),
-                                            const SizedBox(width: 6),
-                                            Text(
-                                              '${photos.length} Memories',
-                                              style: const TextStyle(color: Colors.white70, fontSize: 16, fontWeight: FontWeight.w500),
+                                        // Gradient Overlay
+                                        Container(
+                                          decoration: const BoxDecoration(
+                                            gradient: LinearGradient(
+                                              begin: Alignment.topCenter,
+                                              end: Alignment.bottomCenter,
+                                              colors: [Colors.transparent, Colors.black87],
+                                              stops: [0.5, 1.0],
                                             ),
-                                          ],
+                                          ),
+                                        ),
+                                        Positioned(
+                                          bottom: 20,
+                                          left: 16,
+                                          right: 16,
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                city,
+                                                style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Row(
+                                                children: [
+                                                  const Icon(Icons.photo_library, color: Colors.white70, size: 14),
+                                                  const SizedBox(width: 6),
+                                                  Text(
+                                                    '${photos.length} Memories',
+                                                    style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
+                                                  ),
+                                                ],
+                                              )
+                                            ],
+                                          ),
                                         )
                                       ],
                                     ),
-                                  )
-                                ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      }
+
+                      // Mobile PageView Default
+                      return PageView.builder(
+                        controller: _pageController,
+                        itemCount: cityNames.length,
+                        itemBuilder: (context, index) {
+                          final city = cityNames[index];
+                          final photos = places[city]!;
+                          final coverPhoto = photos.first;
+
+                          return AnimatedBuilder(
+                            animation: _pageController,
+                            builder: (context, child) {
+                              double value = 1.0;
+                              if (_pageController.position.haveDimensions) {
+                                value = _pageController.page! - index;
+                                value = (1 - (value.abs() * 0.2)).clamp(0.0, 1.0);
+                              }
+                              
+                              return Center(
+                                child: SizedBox(
+                                  height: Curves.easeOut.transform(value) * MediaQuery.of(context).size.height * 0.65,
+                                  width: Curves.easeOut.transform(value) * MediaQuery.of(context).size.width,
+                                  child: child,
+                                ),
+                              );
+                            },
+                            child: GestureDetector(
+                              onTap: () {
+                                 context.push('/place_details?city=${Uri.encodeComponent(city)}');
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 20),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(30),
+                                  boxShadow: const [
+                                    BoxShadow(color: Colors.black54, blurRadius: 20, offset: Offset(0, 10))
+                                  ]
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(30),
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      Hero(
+                                        tag: 'cover_$city',
+                                        child: _buildCoverImage(coverPhoto),
+                                      ),
+                                      // Gradient Overlay
+                                      Container(
+                                        decoration: const BoxDecoration(
+                                          gradient: LinearGradient(
+                                            begin: Alignment.topCenter,
+                                            end: Alignment.bottomCenter,
+                                            colors: [Colors.transparent, Colors.black87],
+                                            stops: [0.5, 1.0],
+                                          ),
+                                        ),
+                                      ),
+                                      Positioned(
+                                        bottom: 30,
+                                        left: 24,
+                                        right: 24,
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              city,
+                                              style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold, letterSpacing: -1),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Row(
+                                              children: [
+                                                const Icon(Icons.photo_library, color: Colors.white70, size: 16),
+                                                const SizedBox(width: 6),
+                                                Text(
+                                                  '${photos.length} Memories',
+                                                  style: const TextStyle(color: Colors.white70, fontSize: 16, fontWeight: FontWeight.w500),
+                                                ),
+                                              ],
+                                            )
+                                          ],
+                                        ),
+                                      )
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                        ),
+                          );
+                        },
                       );
                     },
                   ),

@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -31,14 +31,17 @@ class ThumbnailWidget extends StatefulWidget {
 
 class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   Uint8List? _bytes;
-  bool _showImage = true;
-  Timer? _timer;
+  File? _originFile;
   bool _isLoading = false;
+  bool _showImage = true;
   bool _isHovering = false;
+  Timer? _timer;
+  Timer? _loadTimer;
 
   @override
   void initState() {
     super.initState();
+    _bytes = ThumbnailCache().getMemory(widget.entity.id);
     _initShowState();
     
     if (widget.isFastScrolling != null) {
@@ -49,26 +52,27 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   void _initShowState() {
     if (widget.isFastScrolling?.value == true) {
       _showImage = false;
-      _timer = Timer(const Duration(milliseconds: 60), () {
+      _timer = Timer(const Duration(milliseconds: 150), () {
         if (mounted) {
            setState(() {
              _showImage = true;
            });
-           _loadThumbnail();
+           if (_bytes == null) _scheduleLoad();
         }
       });
     } else {
       _showImage = true;
-      if (widget.isHighRes) {
-         _loadThumbnail();
-      } else {
-        // Try synchronous memory load first for instant render
-        _bytes = ThumbnailCache().getMemory(widget.entity.id);
-        if (_bytes == null) {
-           _loadThumbnail();
-        }
-      }
+      if (_bytes == null) _scheduleLoad();
     }
+  }
+
+  void _scheduleLoad() {
+    _loadTimer?.cancel();
+    _loadTimer = Timer(const Duration(milliseconds: 50), () {
+       if (mounted && _bytes == null) {
+          _loadThumbnail();
+       }
+    });
   }
 
   @override
@@ -76,7 +80,9 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
     super.didUpdateWidget(oldWidget);
     if (widget.entity.id != oldWidget.entity.id) {
        _timer?.cancel();
-       _bytes = null; // Clear old image immediately
+       _loadTimer?.cancel();
+       _originFile = null;
+       _bytes = ThumbnailCache().getMemory(widget.entity.id);
        _initShowState();
     }
     
@@ -93,57 +99,68 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
         setState(() {
           _showImage = true;
         });
-        _loadThumbnail();
+        if (_bytes == null) _scheduleLoad();
       }
     }
   }
 
   Future<void> _loadThumbnail() async {
-    if (_bytes != null) return; // Already have data
+    if (_bytes != null || _originFile != null) return;
     if (_isLoading) return;
     
     _isLoading = true;
 
     if (widget.isHighRes) {
        try {
+         if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+            final file = await widget.entity.originFile;
+            if (file != null && await file.exists()) {
+               final ext = file.path.toLowerCase();
+               if (!ext.endsWith('.heic') && !ext.endsWith('.heif') && !ext.endsWith('.raw') && !ext.endsWith('.dng')) {
+                  if (mounted) setState(() => _originFile = file);
+                  return;
+               } else {
+                  final convertedFile = await ThumbnailCache().getConvertedHighResFile(widget.entity);
+                  if (mounted && convertedFile != null && await convertedFile.exists()) {
+                     setState(() => _originFile = convertedFile);
+                     return;
+                  }
+               }
+            }
+         }
+
          final bytes = await widget.entity.thumbnailDataWithSize(
             const ThumbnailSize.square(1000), 
             quality: 100 
          );
+         
+         if (mounted && bytes != null && bytes.isNotEmpty) {
+            setState(() => _bytes = bytes);
+         }
+       } catch (e) {
+          debugPrint("Error loading high-res thumbnail: $e");
+       } finally {
+         if (mounted) setState(() => _isLoading = false);
+       }
+    } else {
+       // Standard grid requests hit the ThumbnailCache asynchronously
+       try {
+         final bytes = await ThumbnailCache().getThumbnail(widget.entity);
          if (mounted && bytes != null) {
             setState(() => _bytes = bytes);
          }
-       } catch (_) {}
-       finally {
+       } catch (e) {
+         debugPrint("Error getting cached thumbnail: $e");
+       } finally {
          if (mounted) setState(() => _isLoading = false);
        }
-       return;
-    }
-
-    // 1. Check Memory again (in case it populated elsewhere)
-    final mem = ThumbnailCache().getMemory(widget.entity.id);
-    if (mem != null) {
-      if (mounted) setState(() => _bytes = mem);
-      _isLoading = false;
-      return;
-    }
-
-    // 2. Load Async (Disk -> Gen)
-    try {
-      final bytes = await ThumbnailCache().getThumbnail(widget.entity);
-      if (mounted && bytes != null) {
-        setState(() => _bytes = bytes);
-      }
-    } catch (_) {
-      // Ignore errors for now
-    } finally {
-      if (mounted) _isLoading = false;
     }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _loadTimer?.cancel();
     widget.isFastScrolling?.removeListener(_onScrollStateChanged);
     super.dispose();
   }
@@ -151,96 +168,150 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   @override
   Widget build(BuildContext context) {
     final item = GalleryItem.local(widget.entity);
+    // Use `context.select` to only rebuild this specific widget when ITS selection state changes.
+    // Extremely lightweight compared to a full Consumer tree.
+    final isSelected = context.select<SelectionProvider, bool>((s) => s.isSelected(item));
+    final isSelectionMode = context.select<SelectionProvider, bool>((s) => s.isSelectionMode);
+
+    Widget imageContent;
+    if (widget.isHighRes) {
+      if (_originFile != null) {
+        imageContent = Image.file(
+           _originFile!, 
+           fit: BoxFit.cover, 
+           gaplessPlayback: true,
+           errorBuilder: (context, error, stackTrace) {
+              debugPrint("Image.file codec error: $error");
+              return Container(
+                 color: Colors.grey[900],
+                 child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 32)),
+              );
+           },
+        );
+      } else if (_bytes != null && _bytes!.isNotEmpty) {
+        imageContent = Image.memory(
+           _bytes!, 
+           fit: BoxFit.cover, 
+           gaplessPlayback: true,
+           errorBuilder: (context, error, stackTrace) {
+              debugPrint("Image.memory codec error: $error");
+              return Container(
+                 color: Colors.grey[900],
+                 child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 32)),
+              );
+           },
+        );
+      } else {
+        imageContent = Container(color: Colors.grey[900]);
+      }
+    } else {
+      if (_bytes != null && _bytes!.isNotEmpty) {
+        imageContent = Image.memory(
+           _bytes!, 
+           fit: BoxFit.cover, 
+           gaplessPlayback: true,
+           errorBuilder: (context, error, stackTrace) {
+              debugPrint("Image.memory codec error: $error");
+              return Container(
+                 color: Colors.grey[900],
+                 child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 32)),
+              );
+           },
+        );
+      } else if (_showImage) {
+        // Fallback loading state before bytes return from cache
+        imageContent = Container(color: Colors.grey[900]); 
+      } else {
+        // Fast scrolling proxy
+        imageContent = Container(color: Colors.grey[900]);
+      }
+    }
 
     return RepaintBoundary(
-      child: Consumer<SelectionProvider>(
-        builder: (context, selection, child) {
-          final isSelected = selection.isSelected(item);
-          final isSelectionMode = selection.isSelectionMode;
-
-          return MouseRegion(
-            onEnter: (_) => setState(() => _isHovering = true),
-            onExit: (_) => setState(() => _isHovering = false),
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: () {
-                if (isSelectionMode) {
-                  selection.toggleSelection(item);
-                } else if (widget.onTap != null) {
-                  widget.onTap!();
-                } else {
-                  context.push('/viewer', extra: item);
-                }
-              },
-              onLongPress: () {
-                selection.toggleSelection(item);
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 100),
-                padding: isSelected ? const EdgeInsets.all(8.0) : EdgeInsets.zero,
-                decoration: BoxDecoration(
-                  color: isSelected ? Colors.grey[800] : Colors.transparent,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(isSelected ? 4 : 6),
-                  child: Container(
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovering = true),
+        onExit: (_) => setState(() => _isHovering = false),
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: () {
+            if (isSelectionMode) {
+              context.read<SelectionProvider>().toggleSelection(item);
+            } else if (widget.onTap != null) {
+              widget.onTap!();
+            } else {
+              context.push('/viewer', extra: item);
+            }
+          },
+          onLongPress: () {
+            context.read<SelectionProvider>().toggleSelection(item);
+          },
+          // Minimal static layouts instead of AnimatedContainer
+          child: Padding(
+            padding: isSelected ? const EdgeInsets.all(8.0) : EdgeInsets.zero,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(isSelected ? 4 : 6),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Container(
                     color: Colors.grey[900],
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        if (_showImage && _bytes != null)
-                          Image.memory(
-                            _bytes!,
-                            fit: BoxFit.cover,
-                            gaplessPlayback: true,
-                          )
-                        else
-                          Container(color: Colors.grey[900]),
-              
-                        if (widget.entity.type == AssetType.video)
-                          Positioned(
-                            top: 4,
-                            right: 4,
-                            child: Container(
-                              padding: const EdgeInsets.all(4),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.5),
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white24, width: 1),
-                              ),
-                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 14),
-                            ),
-                          ),
-                        if (_isHovering || isSelected)
-                          Positioned(
-                            top: 6,
-                            left: 6,
-                            child: GestureDetector(
-                              onTap: () => selection.toggleSelection(item),
-                              child: Container(
-                                width: 22,
-                                height: 22,
-                                decoration: BoxDecoration(
-                                  color: isSelected ? Colors.blue : Colors.white.withOpacity(0.5),
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 1.5),
-                                ),
-                                child: isSelected
-                                    ? const Icon(Icons.check, color: Colors.white, size: 14)
-                                    : null,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
+                    child: imageContent,
                   ),
-                ),
+                  
+                  if (widget.entity.type == AssetType.video)
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          _formatDuration(widget.entity.videoDuration),
+                          style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+
+                  if (isSelected)
+                    Positioned.fill(
+                      child: Container(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        child: const Align(
+                          alignment: Alignment.topLeft,
+                          child: Padding(
+                            padding: EdgeInsets.all(8.0),
+                            child: Icon(Icons.check_circle, color: Colors.blueAccent, size: 24),
+                          ),
+                        ),
+                      ),
+                    ),
+                    
+                   if (!isSelected && _isHovering)
+                     const Positioned(
+                        top: 8,
+                        left: 8,
+                        child: Icon(Icons.circle_outlined, color: Colors.white70, size: 24),
+                     ),
+                ],
               ),
             ),
-          );
-        },
+          ),
+        ),
       ),
     );
+  }
+
+  String _formatDuration(Duration duration) {
+    if (duration.inSeconds == 0) return '';
+    String twoDigits(int n) => n.toString().padLeft(2, "0");
+    String twoDigitMinutes = twoDigits(duration.inMinutes.remainder(60));
+    String twoDigitSeconds = twoDigits(duration.inSeconds.remainder(60));
+    if (duration.inHours > 0) {
+      return "${duration.inHours}:$twoDigitMinutes:$twoDigitSeconds";
+    }
+    return "$twoDigitMinutes:$twoDigitSeconds";
   }
 }

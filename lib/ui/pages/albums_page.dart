@@ -347,7 +347,15 @@ class _AlbumCardState extends State<AlbumCard> {
           children: [
             // Image
             if (_thumbBytes != null)
-              Image.memory(_thumbBytes!, fit: BoxFit.cover, gaplessPlayback: true)
+              Image.memory(
+                 _thumbBytes!, 
+                 fit: BoxFit.cover, 
+                 gaplessPlayback: true,
+                 errorBuilder: (context, error, stackTrace) => Container(
+                    color: Colors.grey[800],
+                    child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24))
+                 ),
+              )
             else
               Container(
                 color: Colors.grey[800],

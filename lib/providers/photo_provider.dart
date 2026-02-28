@@ -13,6 +13,7 @@ import '../services/backup_service.dart';
 import '../services/auth_service.dart';
 import '../services/database_service.dart';
 import '../services/places_service.dart';
+import '../services/thumbnail_cache.dart';
 import 'package:exif/exif.dart';
 
 import '../models/gallery_item.dart';
@@ -42,6 +43,9 @@ class PhotoProvider with ChangeNotifier {
   bool _isJourneyProcessing = false;
   double _journeyProgress = 0.0;
   
+  // Offline Hydration State
+  bool _isOfflineHydrated = false;
+  
   // Expose status for UI
   final ValueNotifier<String?> backgroundStatus = ValueNotifier(null);
 
@@ -63,6 +67,15 @@ class PhotoProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   bool get isJourneyProcessing => _isJourneyProcessing;
   double get journeyProgress => _journeyProgress;
+  
+  // Calculate total cloud bytes
+  int get totalCloudStorageBytes {
+    int sum = 0;
+    for (var img in _remoteImages) {
+      sum += img.size;
+    }
+    return sum;
+  }
   
   Future<void> fetchRemotePhotos() async {
     final session = await AuthService().loadSession();
@@ -191,80 +204,204 @@ class PhotoProvider with ChangeNotifier {
   Future<void> fetchAssets() async {
     _isLoading = true;
     _allAssets = [];
+    _isOfflineHydrated = false;
     notifyListeners();
 
     try {
-      // Only attempt to fetch local assets on mobile platforms
       bool isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
       
       if (isMobile && _hasPermission) {
-        final FilterOptionGroup option = FilterOptionGroup(
-          imageOption: const FilterOption(
-            needTitle: true,
-            sizeConstraint: SizeConstraint(ignoreSize: true),
-          ),
-          orders: [
-            OrderOption(type: OrderOptionType.createDate, asc: false),
-          ],
-        );
-
-        _paths = await PhotoManager.getAssetPathList(
-          type: RequestType.common, 
-          filterOption: option,
-        );
-
-        if (_paths.isNotEmpty) {
-          final totalCount = await _paths.first.assetCountAsync;
-          
-          // Fast Start
-          final int firstBatchSize = 500;
-          final int initialFetch = totalCount < firstBatchSize ? totalCount : firstBatchSize;
-          
-          _allAssets = await _paths.first.getAssetListRange(start: 0, end: initialFetch);
-          _groupAssets();
-          notifyListeners(); 
-
-          // Background Load rest
-          if (totalCount > initialFetch) {
-             await _fetchRemainingAssets(initialFetch, totalCount);
-          }
-           
-           await startLocationScan(); 
-        }
+         // Phase 1: INSTANT SQLite HYDRATION - Load ALL items instantly
+         final cachedIndex = await DatabaseService().getGalleryIndex(limit: 1000000, offset: 0);
+         if (cachedIndex.isNotEmpty) {
+            
+            // Offload heavy parsing & grouping to background isolate
+            final parsedGroups = await compute(_parseAndGroupAssets, {
+               'cachedIndex': cachedIndex,
+               'remoteImages': _remoteImages.map((e) => e.toJson()).toList(), // pass serializable data
+            });
+            
+            _allAssets = parsedGroups['allAssets'] as List<AssetEntity>;
+            _allItems = parsedGroups['allItems'] as List<GalleryItem>;
+            _groupedByDay = parsedGroups['day'] as List<PhotoGroup>;
+            _groupedByMonth = parsedGroups['month'] as List<PhotoGroup>;
+            _groupedByYear = parsedGroups['year'] as List<PhotoGroup>;
+            
+            _isOfflineHydrated = true;
+            
+            _isLoading = false; // Release UI lock instantly, full scrollbar rendered
+            notifyListeners();
+            
+            // Warm up the RAM cache with the first 100 images so the initial viewport is instant
+            if (_allAssets.isNotEmpty) {
+                final int preloadCount = _allAssets.length > 100 ? 100 : _allAssets.length;
+                ThumbnailCache().preCache(_allAssets.sublist(0, preloadCount));
+            }
+            
+            await startLocationScan();
+            _groupPlacesAsync(); // Fire places grouping async
+         }
+         
+         // Phase 2: SILENT BACKGROUND OS SYNC
+         _syncWithOS();
       } 
       
-      // Always fetch remote photos regardless of platform or local assets
       await fetchRemotePhotos(); 
 
     } catch (e) {
       debugPrint("Error fetching assets: $e");
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (!_isOfflineHydrated) {
+         _isLoading = false;
+         notifyListeners();
+      }
     }
   }
 
-  Future<void> _fetchRemainingAssets(int start, int total) async {
+  Future<void> _syncWithOS() async {
     try {
-      const int outputChunk = 2000;
-      
-      int current = start;
-      while (current < total) {
-        final int nextFetch = (current + outputChunk < total) ? outputChunk : (total - current);
-        final List<AssetEntity> more = await _paths.first.getAssetListRange(start: current, end: current + nextFetch);
-        
-        _allAssets.addAll(more);
-        current += nextFetch;
-      }
-      
-      _groupAssets();
-      // notifyListeners(); // Avoid too many updates
-      
-      startLocationScan();
-      
+        final FilterOptionGroup option = FilterOptionGroup(
+          imageOption: const FilterOption(
+            needTitle: true,
+            sizeConstraint: SizeConstraint(ignoreSize: true),
+          ),
+          orders: [ OrderOption(type: OrderOptionType.createDate, asc: false) ],
+        );
+
+        _paths = await PhotoManager.getAssetPathList(type: RequestType.common, filterOption: option);
+
+        if (_paths.isNotEmpty) {
+          final totalCount = await _paths.first.assetCountAsync;
+          
+          if (totalCount > 0) {
+             // If we didn't have a cache (first launch ever or cleared data)
+             if (!_isOfflineHydrated) {
+                // Fetch first 500 immediately to unblock the user's splash screen
+                final int initialFetch = totalCount < 500 ? totalCount : 500;
+                _allAssets = await _paths.first.getAssetListRange(start: 0, end: initialFetch);
+                _groupAssets();
+                notifyListeners(); 
+             }
+
+             // Background: Cache ALL native OS items in SQLite so next launch is instant (limit memory during processing chunking)
+             final sqliteCount = await DatabaseService().getGalleryIndexCount();
+             if (totalCount != sqliteCount) {
+                 await DatabaseService().clearGalleryIndex();
+                 
+                 // Chunk size prevents the Platform Channel from stuttering the main UI thread during sync
+                 const int chunkSize = 1000;
+                 int processed = 0;
+                 List<AssetEntity> backgroundLoadedEntities = [];
+                 
+                 while (processed < totalCount) {
+                    final int fetchC = (processed + chunkSize < totalCount) ? chunkSize : (totalCount - processed);
+                    final entities = await _paths.first.getAssetListRange(start: processed, end: processed + fetchC);
+                    if (!_isOfflineHydrated) {
+                        backgroundLoadedEntities.addAll(entities);
+                    }
+                    
+                    final List<Map<String, dynamic>> cacheObjects = entities.map((e) => {
+                        'id': e.id,
+                        'title': e.title ?? '',
+                        'type_int': e.typeInt,
+                        'width': e.width,
+                        'height': e.height,
+                        'create_dt': e.createDateSecond,
+                        'modify_dt': e.modifiedDateSecond,
+                        'relative_path': e.relativePath,
+                    }).toList();
+                    
+                    await DatabaseService().saveGalleryIndex(cacheObjects);
+                    processed += fetchC;
+                    
+                    // Yield to the event queue longer to let scroll frames render
+                    await Future.delayed(const Duration(milliseconds: 30));
+                 }
+                 
+                 // If the UI was completely unhydrated on this run (First Launch), instantly hot-swap the UI to the full array to expand the scrollbar
+                 if (!_isOfflineHydrated) {
+                    _allAssets = backgroundLoadedEntities;
+                    _isOfflineHydrated = true;
+                    _groupAssets();
+                    notifyListeners();
+                    await startLocationScan();
+                 }
+                 
+                 debugPrint("PhotoProvider: Fully cached $totalCount native OS images into SQLite offline index.");
+             }
+          }
+        }
     } catch (e) {
-      debugPrint("Error fetching remaining assets: $e");
+       debugPrint("Background OS Sync Error: $e");
     }
+  }
+
+
+
+
+  // Top-level function for compute() so 10,000 mapping operations don't freeze main thread
+  static Map<String, dynamic> _parseAndGroupAssets(Map<String, dynamic> params) {
+      final cachedIndex = params['cachedIndex'] as List<Map<String, dynamic>>;
+      final remoteJson = params['remoteImages'] as List<dynamic>;
+      
+      final remoteImages = remoteJson.map((e) => RemoteImage.fromJson(e)).toList();
+      
+      final allAssets = cachedIndex.map((row) {
+         return AssetEntity(
+            id: row['id'] as String,
+            typeInt: row['type_int'] as int,
+            width: row['width'] as int,
+            height: row['height'] as int,
+            createDateSecond: row['create_dt'] as int,
+            modifiedDateSecond: row['modify_dt'] as int,
+            title: row['title'] as String?,
+            // Avoid relativePath in compute to prevent platform channel checks locally inside mock
+         );
+      }).toList();
+
+      final Set<String> localIds = allAssets.map((e) => e.id).toSet();
+      final List<RemoteImage> uniqueRemote = remoteImages.where((remote) {
+         if (remote.sourceId != null && localIds.contains(remote.sourceId)) {
+            return false; 
+         }
+         return true;
+      }).toList();
+
+      final allItems = [
+        ...allAssets.map((e) => GalleryItem.local(e)),
+        ...uniqueRemote.map((e) => GalleryItem.remote(e))
+      ];
+      
+      allItems.sort((a, b) => b.date.compareTo(a.date));
+
+      final Map<DateTime, List<GalleryItem>> dayGroups = {};
+      final Map<DateTime, List<GalleryItem>> monthGroups = {};
+      final Map<DateTime, List<GalleryItem>> yearGroups = {};
+
+      for (var e in allItems) {
+          final d = DateTime(e.date.year, e.date.month, e.date.day);
+          final m = DateTime(e.date.year, e.date.month);
+          final y = DateTime(e.date.year);
+          dayGroups.putIfAbsent(d, () => []).add(e);
+          monthGroups.putIfAbsent(m, () => []).add(e);
+          yearGroups.putIfAbsent(y, () => []).add(e);
+      }
+
+      var dayList = dayGroups.entries.map((e) => PhotoGroup(date: e.key, items: e.value)).toList();
+      var monthList = monthGroups.entries.map((e) => PhotoGroup(date: e.key, items: e.value)).toList();
+      var yearList = yearGroups.entries.map((e) => PhotoGroup(date: e.key, items: e.value)).toList();
+
+      dayList.sort((a, b) => b.date.compareTo(a.date));
+      monthList.sort((a, b) => b.date.compareTo(a.date));
+      yearList.sort((a, b) => b.date.compareTo(a.date));
+
+      return {
+         'allAssets': allAssets,
+         'allItems': allItems,
+         'day': dayList,
+         'month': monthList,
+         'year': yearList,
+      };
   }
 
   // Update _groupAssets to merge and group

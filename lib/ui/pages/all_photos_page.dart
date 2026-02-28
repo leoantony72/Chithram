@@ -62,6 +62,8 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
     });
   }
 
+
+
   Future<void> _handleUpload() async {
       final result = await FilePicker.platform.pickFiles(allowMultiple: true, type: FileType.image);
       if (result != null && result.files.isNotEmpty) {
@@ -414,6 +416,156 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
     }
   }
 
+  void _showSidebarMenu(BuildContext context) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: "SidebarMenu",
+      barrierColor: Colors.black.withValues(alpha: 0.5),
+      transitionDuration: const Duration(milliseconds: 350),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: Material(
+            color: Colors.transparent,
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+              child: Container(
+                width: 320,
+                height: double.infinity,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E1E).withValues(alpha: 0.7), // Sleek dark grey
+                  border: Border(right: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+                ),
+                child: SafeArea(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 40, 24, 32),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.blueAccent.withValues(alpha: 0.2),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.cloud_done_rounded, color: Colors.blueAccent, size: 28),
+                            ),
+                            const SizedBox(width: 16),
+                            const Text(
+                              'Chithram',
+                              style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Consumer<PhotoProvider>(
+                        builder: (context, provider, child) {
+                          final int bytes = provider.totalCloudStorageBytes;
+                          final double mb = bytes / (1024 * 1024);
+                          final double gb = bytes / (1024 * 1024 * 1024);
+                          
+                          String displaySize = '';
+                          if (gb >= 1.0) {
+                             displaySize = '${gb.toStringAsFixed(1)} GB / 15 GB';
+                          } else {
+                             displaySize = '${mb.toStringAsFixed(1)} MB / 15 GB';
+                          }
+
+                          // Assuming 15GB free tier for visual progress
+                          final double progress = (gb / 15.0).clamp(0.0, 1.0);
+
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                            child: Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.05),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: Colors.white10),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      const Text('Cloud Storage', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600)),
+                                      Icon(Icons.backup_rounded, color: Colors.white.withValues(alpha: 0.5), size: 16),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(displaySize, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                                  const SizedBox(height: 12),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: LinearProgressIndicator(
+                                      value: progress,
+                                      minHeight: 6,
+                                      backgroundColor: Colors.white10,
+                                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      _SidebarMenuItem(
+                        icon: Icons.settings_rounded,
+                        title: 'Settings',
+                        subtitle: 'Cloud sync & app preferences',
+                        onTap: () {
+                          Navigator.pop(context);
+                          context.push('/settings');
+                        },
+                      ),
+                      const Spacer(),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 24.0),
+                        child: Divider(color: Colors.white10, height: 1),
+                      ),
+                      _SidebarMenuItem(
+                        icon: Icons.logout_rounded,
+                        title: 'Logout',
+                        subtitle: 'Clear secure session keys',
+                        isDestructive: true,
+                        onTap: () async {
+                           Navigator.pop(context);
+                           await AuthService().logout();
+                           if (context.mounted) {
+                             context.go('/auth');
+                           }
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(-1, 0),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          )),
+          child: child,
+        );
+      },
+    );
+  }
+
   Widget _buildAlbumsRow(PhotoProvider provider) {
      final bool isWide = MediaQuery.of(context).size.width > 600;
      if (!isWide && !kIsWeb) return const SizedBox.shrink();
@@ -536,7 +688,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                 builder: (context) => IconButton(
                   icon: const Icon(Icons.menu_rounded, color: Colors.white70),
                   onPressed: () {
-                     context.push('/settings');
+                     _showSidebarMenu(context);
                   },
                 ),
               ),
@@ -657,6 +809,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                     child: CustomScrollView(
                         controller: _scrollController,
                         physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+                        cacheExtent: 1500, // Preload pixels off-screen so images pop in instantly
                         slivers: [
                           SliverToBoxAdapter(
                             child: _buildAlbumsRow(provider),
@@ -874,6 +1027,81 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                 style: TextStyle(color: color.withOpacity(0.8), fontSize: 11, fontWeight: FontWeight.w600),
               )
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarMenuItem extends StatefulWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  final bool isDestructive;
+
+  const _SidebarMenuItem({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.isDestructive = false,
+  });
+
+  @override
+  State<_SidebarMenuItem> createState() => _SidebarMenuItemState();
+}
+
+class _SidebarMenuItemState extends State<_SidebarMenuItem> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = widget.isDestructive ? Colors.redAccent : Colors.white;
+    final hoverColor = widget.isDestructive ? Colors.redAccent.withValues(alpha: 0.1) : Colors.white.withValues(alpha: 0.05);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _isHovered ? hoverColor : Colors.transparent,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: _isHovered ? (widget.isDestructive ? Colors.red.withValues(alpha: 0.2) : Colors.white10) : Colors.transparent,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(widget.icon, color: color, size: 24),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        style: TextStyle(color: color, fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        widget.subtitle,
+                        style: TextStyle(color: color.withValues(alpha: 0.6), fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: color.withValues(alpha: 0.3), size: 20),
+              ],
+            ),
           ),
         ),
       ),

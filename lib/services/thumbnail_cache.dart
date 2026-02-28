@@ -12,8 +12,8 @@ class ThumbnailCache {
   factory ThumbnailCache() => _instance;
   ThumbnailCache._internal();
 
-  // 50 MB Memory Cache Limit
-  final int _maxMemorySizeBytes = 50 * 1024 * 1024; 
+  // 300 MB Memory Cache Limit (Increased from 150MB to prevent thrashing on high-density 120Hz grids)
+  final int _maxMemorySizeBytes = 300 * 1024 * 1024; 
   int _currentMemorySizeBytes = 0;
 
   final LinkedHashMap<String, Uint8List> _memoryCache = LinkedHashMap();
@@ -21,6 +21,7 @@ class ThumbnailCache {
 
   // Disk Cache
   Directory? _cacheDir;
+  Directory? _convertedDir;
   final Set<String> _diskCacheKeys = {};
   bool _isInitialized = false;
   bool _isInitStarted = false;
@@ -45,8 +46,13 @@ class ThumbnailCache {
       }
       final root = await getApplicationSupportDirectory();
       _cacheDir = Directory('${root.path}/thumbnails');
+      _convertedDir = Directory('${root.path}/converted_highres');
+      
       if (!await _cacheDir!.exists()) {
         await _cacheDir!.create(recursive: true);
+      }
+      if (!await _convertedDir!.exists()) {
+        await _convertedDir!.create(recursive: true);
       }
       
       _isInitialized = true;
@@ -109,6 +115,48 @@ class ThumbnailCache {
 
 
   
+  /// Generates a full-resolution JPEG conversion on disk for unsupported native formats (HEIC, RAW)
+  Future<File?> getConvertedHighResFile(AssetEntity entity) async {
+    if (kIsWeb) return null;
+    
+    if (!_isInitialized) {
+       await init();
+    } else if (!_initCompleter.isCompleted) {
+       await _initCompleter.future;
+    }
+
+    if (_convertedDir == null) return null;
+    
+    // Hash the ID to make a safe filename
+    final safeName = base64Url.encode(utf8.encode(entity.id)).replaceAll('=', '') + '.jpg';
+    final targetFile = File('${_convertedDir!.path}/$safeName');
+    
+    // 1. Check if already converted and cached on disk
+    if (await targetFile.exists()) {
+       return targetFile;
+    }
+    
+    // 2. Not cached. Instruct photo_manager to tap into the OS decoders 
+    // to extract the full resolution image natively as a pure JPEG byte sequence.
+    try {
+      debugPrint("extracting lossless JPEG for ${entity.id}...");
+      final bytes = await entity.thumbnailDataWithSize(
+         ThumbnailSize(entity.width, entity.height),
+         quality: 100, // Lossless JPEG conversion
+         format: ThumbnailFormat.jpeg,
+      );
+      
+      if (bytes != null && bytes.isNotEmpty) {
+        // 3. Write directly to disk to prevent RAM bloat
+        await targetFile.writeAsBytes(bytes);
+        return targetFile;
+      }
+    } catch (e) {
+      debugPrint("Error performing lossless format conversion: $e");
+    }
+    return null;
+  }
+  
   // The main method widgets should use
   Future<Uint8List?> getThumbnail(AssetEntity entity) async {
     // 1. Memory Check (Fastest, Synchronous-like access)
@@ -143,8 +191,8 @@ class ThumbnailCache {
     try {
       debugPrint("Generating thumbnail for ${entity.id}...");
       final bytes = await entity.thumbnailDataWithSize(
-         const ThumbnailSize.square(256),
-         quality: 90,
+         const ThumbnailSize.square(150),
+         quality: 60,
       );
       
       if (bytes != null) {
@@ -301,8 +349,8 @@ class ThumbnailCache {
       try {
         // Generate
         final bytes = await asset.thumbnailDataWithSize(
-           const ThumbnailSize.square(256),
-           quality: 90,
+           const ThumbnailSize.square(150),
+           quality: 60,
         );
         
         // Save to disk index

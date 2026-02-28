@@ -64,14 +64,26 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
     final targetWidth = (mediaQuery.size.width * pixelRatio).toInt();
     final targetHeight = (mediaQuery.size.height * pixelRatio).toInt();
     
+    // Ensure desktop doesn't attempt to load raw HEIC/RAW bytes natively
+    final title = widget.asset.title?.toLowerCase() ?? '';
+    final isUnsupportedAppleFormat = title.endsWith('.heic') || title.endsWith('.heif') || title.endsWith('.raw') || title.endsWith('.dng');
+    
     // Only upgrade if necessary
     final bool useOriginal = _allowOriginal && 
         (widget.asset.width > targetWidth || widget.asset.height > targetHeight);
 
+    // If unsupported, we bypass `isOriginal` and instead request the OS to generate 
+    // a 100% quality full-resolution JPEG dynamically.
+    final bool shouldExtractJpeg = useOriginal && isUnsupportedAppleFormat;
+
     final imageProvider = AssetEntityImageProvider(
       widget.asset,
-      isOriginal: useOriginal,
-      thumbnailSize: useOriginal ? null : ThumbnailSize(targetWidth, targetHeight),
+      isOriginal: useOriginal && !isUnsupportedAppleFormat,
+      thumbnailSize: (useOriginal && !isUnsupportedAppleFormat) 
+          ? null 
+          : (shouldExtractJpeg 
+              ? ThumbnailSize(widget.asset.width, widget.asset.height) 
+              : ThumbnailSize(targetWidth, targetHeight)),
       thumbnailFormat: ThumbnailFormat.jpeg,
     );
 
@@ -138,6 +150,7 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
                    _placeholderBytes!,
                    fit: BoxFit.contain,
                    gaplessPlayback: true,
+                   errorBuilder: (context, error, stackTrace) => const Center(child: Icon(Icons.broken_image, color: Colors.white24)),
                  );
                }
                return const Center(child: CircularProgressIndicator(color: Colors.white));
@@ -163,11 +176,12 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
                       fit: StackFit.expand,
                       children: [
                         if (_placeholderBytes != null)
-                           Image.memory(
-                             _placeholderBytes!,
-                             fit: BoxFit.contain,
-                             gaplessPlayback: true,
-                           ),
+                            Image.memory(
+                              _placeholderBytes!,
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
+                              errorBuilder: (context, error, stackTrace) => const Center(child: Icon(Icons.broken_image, color: Colors.white24)),
+                            ),
                         Opacity(
                           opacity: value,
                           child: state.completedWidget,
