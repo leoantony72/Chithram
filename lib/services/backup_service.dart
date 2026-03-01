@@ -225,18 +225,23 @@ class BackupService {
       print('BackupService: Thumbnails generated. 256px: ${thumb256Bytes.length} bytes, 64px: ${thumb64Bytes.length} bytes.');
       
       // 4. Get Presigned URLs
-      final variants = ['original', 'thumb_256', 'thumb_64'];
+      final variants = ['original', 'thumb_1024', 'thumb_256', 'thumb_64'];
       final urls = await _getUploadUrls(userId, imageId, variants);
-      if (urls == null || urls.length != 3) {
+      if (urls == null || urls.length != 4) {
         print('BackupService: Failed to get all upload URLs. Got: ${urls?.keys}');
         return;
       }
       print('BackupService: Received ${urls.length} upload URLs.');
 
       // 5. Encrypt and Upload in Parallel
-      print('BackupService: Starting parallel uploads for $imageId...');
+      print('BackupService: Starting parallel uploads for $imageId (Original + 1024px + 256px + 64px)...');
+      
+      // Generate 1024px high-res JPEG thumbnail for Windows consoles
+      final thumb1024Bytes = await asset.thumbnailDataWithSize(const ThumbnailSize(1024, 1024), quality: 85);
+      
       final uploads = [
         _encryptAndUpload(urls['original']!, fileBytes, masterKey, 'original'),
+        if (thumb1024Bytes != null) _encryptAndUpload(urls['thumb_1024']!, thumb1024Bytes, masterKey, 'thumb_1024'),
         _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
         _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
       ];

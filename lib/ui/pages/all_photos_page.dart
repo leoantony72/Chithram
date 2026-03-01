@@ -831,9 +831,16 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
       ),
       body: Stack(
         children: [
-          Consumer<PhotoProvider>(
-            builder: (context, provider, child) {
-              if (provider.isLoading && provider.allAssets.isEmpty && provider.remoteImages.isEmpty) {
+          Selector<PhotoProvider, _GridData>(
+            selector: (context, provider) => _GridData(
+               isLoading: provider.isLoading,
+               groups: _getGroupsForMode(_groupMode, provider),
+               totalCount: provider.allAssets.length + provider.remoteImages.length,
+               remoteAlbums: provider.remoteAlbums,
+            ),
+            shouldRebuild: (oldData, newData) => oldData != newData,
+            builder: (context, data, child) {
+              if (data.isLoading && data.groups.isEmpty) {
                 return const Center(child: CircularProgressIndicator(color: Colors.white70));
               }
 
@@ -851,30 +858,27 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
               }
 
               if (_searchResults != null) {
-                return _buildSearchResults(provider);
+                return _buildSearchResults(context.read<PhotoProvider>());
               }
 
-              if (provider.groupedByDay.isEmpty && provider.groupedByMonth.isEmpty && provider.groupedByYear.isEmpty) {
+              if (data.groups.isEmpty) {
                 return const Center(child: Text('No photos found.'));
               }
 
-              List<PhotoGroup> groups;
+              List<PhotoGroup> groups = data.groups;
               int crossAxisCount;
               final double screenWidth = MediaQuery.of(context).size.width;
               final bool isMobile = screenWidth < 600;
 
               switch (_groupMode) {
                 case GroupMode.year:
-                  groups = provider.groupedByYear;
                   crossAxisCount = isMobile ? 6 : 8;
                   break;
                 case GroupMode.month:
-                  groups = provider.groupedByMonth;
                   crossAxisCount = isMobile ? 4 : 7;
                   break;
                 case GroupMode.day:
                 default:
-                  groups = provider.groupedByDay;
                   crossAxisCount = isMobile ? 3 : 6;
                   break;
               }
@@ -885,7 +889,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                 onScaleUpdate: _onScaleUpdate,
                 onScaleEnd: _onScaleEnd,
                 child: RefreshIndicator(
-                  onRefresh: () => provider.refresh(),
+                  onRefresh: () => context.read<PhotoProvider>().refresh(),
                   color: Colors.white,
                   backgroundColor: Colors.grey[900],
                   child: DraggableScrollIcon(
@@ -899,10 +903,10 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                         cacheExtent: 1500,
                         slivers: [
                           SliverToBoxAdapter(
-                            child: _buildAlbumsRow(provider),
+                            child: _buildAlbumsRow(context.read<PhotoProvider>()),
                           ),
                           SliverToBoxAdapter(
-                            child: _buildAllHeader(provider.allAssets.length + provider.remoteImages.length),
+                            child: _buildAllHeader(data.totalCount),
                           ),
                           for (var group in groups) ...[
                             SliverPersistentHeader(
@@ -1273,4 +1277,31 @@ class _SidebarMenuItemState extends State<_SidebarMenuItem> {
       ),
     );
   }
+}
+
+class _GridData {
+  final bool isLoading;
+  final List<PhotoGroup> groups;
+  final int totalCount;
+  final List<Map<String, dynamic>> remoteAlbums;
+
+  _GridData({
+    required this.isLoading,
+    required this.groups,
+    required this.totalCount,
+    required this.remoteAlbums,
+  });
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is _GridData &&
+        other.isLoading == isLoading &&
+        other.totalCount == totalCount &&
+        listEquals(other.groups, groups) &&
+        listEquals(other.remoteAlbums, remoteAlbums);
+  }
+
+  @override
+  int get hashCode => Object.hash(isLoading, groups, totalCount, remoteAlbums);
 }

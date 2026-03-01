@@ -52,12 +52,35 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   @override
   void initState() {
     super.initState();
-    final id = _effectiveItem.id;
-    _bytes = ThumbnailCache().getMemory(id);
+    final item = _effectiveItem;
+    _bytes = ThumbnailCache().getMemory(item.id);
+    
+    // Proactive High-Res Disk Check
+    if (widget.isHighRes) {
+       _checkHighResDiskSync(item);
+    }
+
     _initShowState();
     
     if (widget.isFastScrolling != null) {
       widget.isFastScrolling!.addListener(_onScrollStateChanged);
+    }
+  }
+
+  void _checkHighResDiskSync(GalleryItem item) {
+    // We can't await in initState, but we can check if the file exists on disk synchronously-ish or via then
+    if (item.type == GalleryItemType.local) {
+       ThumbnailCache().getConvertedHighResFile(item.local!).then((file) {
+          if (mounted && file != null && file.existsSync()) {
+             setState(() => _originFile = file);
+          }
+       });
+    } else {
+       ThumbnailCache().getRemoteOriginalFile(item.remote!.imageId).then((file) {
+          if (mounted && file != null && file.existsSync()) {
+             setState(() => _originFile = file);
+          }
+       });
     }
   }
 
@@ -69,20 +92,25 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
            setState(() {
              _showImage = true;
            });
-           if (_bytes == null) _scheduleLoad();
+            if (_bytes == null || widget.isHighRes) _scheduleLoad();
         }
       });
     } else {
       _showImage = true;
-      if (_bytes == null) _scheduleLoad();
+      if (_bytes == null || widget.isHighRes) _scheduleLoad();
     }
   }
 
   void _scheduleLoad() {
     _loadTimer?.cancel();
     _loadTimer = Timer(const Duration(milliseconds: 50), () {
-       if (mounted && _bytes == null) {
-          _loadThumbnail();
+       if (mounted) {
+          // Always run _loadThumbnail if there is no image data at all.
+          // Also run if this is a high-res slot but we haven't fetched the high-res file yet.
+          final needsLoad = _bytes == null || (widget.isHighRes && _originFile == null);
+          if (needsLoad) {
+             _loadThumbnail();
+          }
        }
     });
   }
@@ -90,11 +118,22 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   @override
   void didUpdateWidget(ThumbnailWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_effectiveItem.id != (oldWidget.item?.id ?? oldWidget.entity?.id)) {
+    final currentId = _effectiveItem.id;
+    final oldId = oldWidget.item?.id ?? oldWidget.entity?.id;
+    
+    if (currentId != oldId || widget.isHighRes != oldWidget.isHighRes) {
        _timer?.cancel();
        _loadTimer?.cancel();
        _originFile = null;
-       _bytes = ThumbnailCache().getMemory(_effectiveItem.id);
+       
+       if (currentId != oldId) {
+          _bytes = ThumbnailCache().getMemory(currentId);
+       }
+
+       if (widget.isHighRes) {
+          _checkHighResDiskSync(_effectiveItem);
+       }
+
        _initShowState();
     }
     
@@ -111,13 +150,16 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
         setState(() {
           _showImage = true;
         });
-        if (_bytes == null) _scheduleLoad();
+        if (_bytes == null || widget.isHighRes) _scheduleLoad();
       }
     }
   }
 
   Future<void> _loadThumbnail() async {
-    if (_bytes != null || _originFile != null) return;
+    // If a high-res file is already displayed, nothing to do.
+    if (_originFile != null) return;
+    // For non-high-res, if we already have bytes, nothing to do.
+    if (!widget.isHighRes && _bytes != null) return;
     if (_isLoading) return;
     
     _isLoading = true;
@@ -129,25 +171,35 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
       if (widget.isHighRes) {
          try {
            if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+              final convertedFile = await ThumbnailCache().getConvertedHighResFile(entity);
+              if (mounted && convertedFile != null && await convertedFile.exists()) {
+                 debugPrint("ThumbnailWidget: Local High-Res Hit (Converted) -> ${convertedFile.path}");
+                 setState(() {
+                    _originFile = convertedFile;
+                    // Don't clear _bytes; use as fallback if Image.file fails
+                 });
+                 return;
+              }
+              
               final file = await entity.originFile;
               if (file != null && await file.exists()) {
                  final ext = file.path.toLowerCase();
                  if (!ext.endsWith('.heic') && !ext.endsWith('.heif') && !ext.endsWith('.raw') && !ext.endsWith('.dng')) {
-                    if (mounted) setState(() => _originFile = file);
+                    debugPrint("ThumbnailWidget: Local High-Res Hit (Origin) -> ${file.path}");
+                    if (mounted) setState(() {
+                       _originFile = file;
+                       // Don't clear _bytes; use as fallback if Image.file fails
+                    });
                     return;
-                 } else {
-                    final convertedFile = await ThumbnailCache().getConvertedHighResFile(entity);
-                    if (mounted && convertedFile != null && await convertedFile.exists()) {
-                       setState(() => _originFile = convertedFile);
-                       return;
-                    }
                  }
               }
            }
 
+           // Fallback to large thumb if origin/converted fails
+           debugPrint("ThumbnailWidget: Local High-Res Fallback (2000px) Request for ${item.id}");
            final bytes = await entity.thumbnailDataWithSize(
-              const ThumbnailSize.square(1000), 
-              quality: 100 
+              const ThumbnailSize.square(2000), 
+              quality: 95 
            );
            
            if (mounted && bytes != null && bytes.isNotEmpty) {
@@ -174,6 +226,20 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
       // Remote Loading Logic
       try {
         final remote = item.remote!;
+        
+        // --- High-Res Disk Cache Check ---
+        if (widget.isHighRes) {
+           final cachedFile = await ThumbnailCache().getRemoteOriginalFile(remote.imageId);
+           if (cachedFile != null && await cachedFile.exists()) {
+              debugPrint("ThumbnailWidget: Remote High-Res Disk Hit -> ${cachedFile.path}");
+              if (mounted) setState(() {
+                 _originFile = cachedFile;
+                 // Don't clear _bytes; use as fallback if Image.file fails
+              });
+              return;
+           }
+        }
+
         final crypto = CryptoService(); 
         final session = await AuthService().loadSession();
         if (session == null) return;
@@ -183,18 +249,58 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
 
         var url = remote.thumb256Url;
         if (url.isEmpty) url = remote.thumb64Url;
+        bool _isActualHighRes = false; // Tracks if we're fetching real high-res data
 
-        if (widget.isHighRes && remote.originalUrl.isNotEmpty) {
-            url = remote.originalUrl;
+        // Use high-res source for cards (Journeys, etc)
+        if (widget.isHighRes) {
+            final isWindowsOrLinux = Platform.isWindows || Platform.isLinux;
+            final isHeicOriginal = remote.mimeType.contains('heic') || remote.mimeType.contains('heif');
+            
+            if (isWindowsOrLinux && isHeicOriginal) {
+                if (remote.thumb1024Url.isNotEmpty) {
+                    // Modern Upload: Use the 1024px High-Res JPEG (Sharp & Native)
+                    url = remote.thumb1024Url;
+                    _isActualHighRes = true;
+                    debugPrint("ThumbnailWidget: Using 1024px JPEG High-Res for Windows -> $url");
+                } else {
+                    // Legacy HEIC on Windows: User wants high-res, so we download original HEIC 
+                    // and let ThumbnailCache perform background JPEG conversion.
+                    url = remote.originalUrl;
+                    _isActualHighRes = true;
+                    debugPrint("ThumbnailWidget: Forcing HEIC Original download to achieve high-res Journey cover on Windows.");
+                }
+            } else if (remote.originalUrl.isNotEmpty) {
+                url = remote.originalUrl;
+                _isActualHighRes = true;
+                debugPrint("ThumbnailWidget: Fetching Remote Original URL -> $url");
+            } else if (remote.thumb1024Url.isNotEmpty) {
+                url = remote.thumb1024Url;
+                _isActualHighRes = true;
+            }
         }
 
         if (url.isNotEmpty) {
           final data = await BackupService().fetchAndDecryptFromUrl(url, key);
           if (mounted && data != null) {
-            if (!widget.isHighRes) {
+            if (widget.isHighRes && _isActualHighRes) {
+               debugPrint("ThumbnailWidget: Successfully decrypted high-res. Saving to disk...");
+               // --- Save to High-Res Disk Cache (only genuine high-res content) ---
+               await ThumbnailCache().saveRemoteOriginalFile(remote.imageId, data);
+               // Re-fetch to use as File (more RAM efficient than bytes for large cards)
+               final cachedFile = await ThumbnailCache().getRemoteOriginalFile(remote.imageId);
+               if (mounted && cachedFile != null) {
+                  setState(() {
+                     _originFile = cachedFile;
+                  });
+                  return;
+               }
+            } else {
+               // Low-res fallback or non-high-res: show in memory only, don't persist as high-res
                ThumbnailCache().putMemory(remote.imageId, data);
             }
             setState(() => _bytes = data);
+          } else if (mounted && data == null) {
+             debugPrint("ThumbnailWidget: Failed to fetch/decrypt URL -> $url");
           }
         }
       } catch (e) {
@@ -216,8 +322,13 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   @override
   Widget build(BuildContext context) {
     final item = _effectiveItem;
-    final isSelected = context.select<SelectionProvider, bool>((s) => s.isSelected(item));
-    final isSelectionMode = context.select<SelectionProvider, bool>((s) => s.isSelectionMode);
+    
+    // Consolidate selectors to minimize build evaluations
+    final selectionState = context.select<SelectionProvider, ({bool isSelected, bool isSelectionMode})>(
+      (s) => (isSelected: s.isSelected(item), isSelectionMode: s.isSelectionMode)
+    );
+    final isSelected = selectionState.isSelected;
+    final isSelectionMode = selectionState.isSelectionMode;
 
     Widget imageContent;
     if (_originFile != null) {
@@ -225,7 +336,17 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
          _originFile!, 
          fit: BoxFit.cover, 
          gaplessPlayback: true,
-         errorBuilder: (context, error, stackTrace) => _buildPlaceholder(),
+         errorBuilder: (context, error, stackTrace) {
+            debugPrint("ThumbnailWidget: Image.file error for ${_originFile!.path}: $error. Falling back to thumbnail bytes.");
+            // Log if it's HEIC
+            if (_originFile!.path.toLowerCase().endsWith('.heic') || _originFile!.path.toLowerCase().endsWith('.heif')) {
+               debugPrint("ThumbnailWidget: File is HEIC/HEIF - Not natively supported on Windows Flutter.");
+            }
+            if (_bytes != null && _bytes!.isNotEmpty) {
+               return Image.memory(_bytes!, fit: BoxFit.cover, gaplessPlayback: true);
+            }
+            return _buildPlaceholder();
+         },
       );
     } else if (_bytes != null && _bytes!.isNotEmpty) {
       imageContent = Image.memory(
@@ -253,10 +374,20 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
               context.push('/viewer', extra: item);
             }
           },
+          onDoubleTap: () {
+             // Optional: Explicitly open viewer on double tap even if in selection mode?
+             // Not requested, keeping simple for now.
+          },
+          onSecondaryTap: () {
+             // Right Click to Select
+             context.read<SelectionProvider>().toggleSelection(item);
+          },
           onLongPress: () {
             context.read<SelectionProvider>().toggleSelection(item);
           },
-          child: Padding(
+          child: AnimatedPadding(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
             padding: isSelected ? const EdgeInsets.all(8.0) : EdgeInsets.zero,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(isSelected ? 4 : 6),
@@ -300,10 +431,15 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
                     ),
                     
                    if (!isSelected && _isHovering)
-                     const Positioned(
+                     Positioned(
                         top: 8,
                         left: 8,
-                        child: Icon(Icons.circle_outlined, color: Colors.white70, size: 24),
+                        child: GestureDetector(
+                           onTap: () {
+                              context.read<SelectionProvider>().toggleSelection(item);
+                           },
+                           child: const Icon(Icons.circle_outlined, color: Colors.white70, size: 24),
+                        ),
                      ),
 
                    if (item.isFavorite)

@@ -8,8 +8,10 @@ class RemoteImage {
   final double latitude;
   final double longitude;
   final String originalUrl;
+  final String thumb1024Url;
   final String thumb256Url;
   final String thumb64Url;
+  final String mimeType;
   final String? sourceId; // Original asset ID from device
   final DateTime? createdAt;
   final bool isDeleted;
@@ -25,8 +27,10 @@ class RemoteImage {
     this.latitude = 0,
     this.longitude = 0,
     required this.originalUrl,
+    required this.thumb1024Url,
     required this.thumb256Url,
     required this.thumb64Url,
+    this.mimeType = 'image/jpeg',
     this.sourceId,
     this.createdAt,
     this.isDeleted = false,
@@ -44,8 +48,10 @@ class RemoteImage {
       latitude: (json['latitude'] ?? 0).toDouble(),
       longitude: (json['longitude'] ?? 0).toDouble(),
       originalUrl: json['original_url'] ?? '',
+      thumb1024Url: json['thumb_1024_url'] ?? '',
       thumb256Url: json['thumb_256_url'] ?? '',
       thumb64Url: json['thumb_64_url'] ?? '',
+      mimeType: json['mime_type'] ?? 'image/jpeg',
       sourceId: json['source_id'],
       createdAt: json['created_at'] != null 
           ? DateTime.tryParse(json['created_at']) 
@@ -66,8 +72,10 @@ class RemoteImage {
       'latitude': latitude,
       'longitude': longitude,
       'original_url': originalUrl,
+      'thumb_1024_url': thumb1024Url,
       'thumb_256_url': thumb256Url,
       'thumb_64_url': thumb64Url,
+      'mime_type': mimeType,
       'source_id': sourceId,
       'created_at': createdAt?.toIso8601String(),
       'is_deleted': isDeleted,

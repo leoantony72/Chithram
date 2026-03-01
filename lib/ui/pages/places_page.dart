@@ -314,6 +314,6 @@ class _PlacesPageState extends State<PlacesPage> {
   }
 
   Widget _buildCoverImage(GalleryItem item) {
-    return ThumbnailWidget(item: item, isHighRes: true);
+    return ThumbnailWidget(key: ValueKey('highres_${item.id}'), item: item, isHighRes: true);
   }
 }

@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:image/image.dart' as img;
 
 class ThumbnailCache {
   static final ThumbnailCache _instance = ThumbnailCache._internal();
@@ -153,6 +154,110 @@ class ThumbnailCache {
       }
     } catch (e) {
       debugPrint("Error performing lossless format conversion: $e");
+    }
+    return null;
+  }
+
+  /// Checks if a remote original is already decrypted and cached on disk.
+  /// Strictly prioritizes .jpg for Windows/Linux to avoid HEIC rendering issues.
+  Future<File?> getRemoteOriginalFile(String imageId) async {
+    if (kIsWeb) return null;
+    if (!_isInitialized) await init();
+    
+    final baseName = 'remote_' + base64Url.encode(utf8.encode(imageId)).replaceAll('=', '');
+    
+    // On Windows/Linux, HEIC is usually unsupported natively. 
+    // We MUST use the converted .jpg if available.
+    final jpgFile = File('${_convertedDir!.path}/$baseName.jpg');
+    if (await jpgFile.exists()) return jpgFile;
+
+    // For other platforms, or if it's already a native format like PNG/WebP
+    for (final ext in ['.png', '.webp']) {
+       final targetFile = File('${_convertedDir!.path}/$baseName$ext');
+       if (await targetFile.exists()) return targetFile;
+    }
+
+    // Only return HEIC if we are on a platform that natively supports it (iOS/macOS/Android 9+)
+    if (Platform.isIOS || Platform.isMacOS || Platform.isAndroid) {
+       final heicFile = File('${_convertedDir!.path}/$baseName.heic');
+       if (await heicFile.exists()) return heicFile;
+    }
+
+    return null;
+  }
+
+  /// Saves a decrypted remote original to disk for high-res reuse, detecting format
+  /// and performing background HEIC->JPEG conversion for Windows compatibility.
+  Future<void> saveRemoteOriginalFile(String imageId, Uint8List bytes) async {
+    if (kIsWeb) return;
+    if (!_isInitialized) await init();
+    
+    try {
+      String ext = '.jpg';
+      bool isHeic = false;
+
+      if (bytes.length > 12) {
+         // Check for HEIC signature: ftypheic or ftypmif1 or ftypheix
+         final headerString = String.fromCharCodes(bytes.sublist(4, 12));
+         if (headerString.contains('ftypheic') || headerString.contains('ftypmif1') || headerString.contains('ftypheix')) {
+            isHeic = true;
+            ext = '.heic';
+         } else if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) {
+            ext = '.png';
+         } else if (bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46) {
+            ext = '.webp'; 
+         }
+      }
+
+      final baseName = 'remote_' + base64Url.encode(utf8.encode(imageId)).replaceAll('=', '');
+      
+      // On Windows/Linux, if it's HEIC, we MUST try to convert it to JPEG.
+      if (isHeic && (Platform.isWindows || Platform.isLinux)) {
+         // Silenced/Reduced logging to avoid spam during background sync
+         final jpgBytes = await compute(_convertHeicToJpg, bytes);
+         if (jpgBytes != null && jpgBytes.isNotEmpty) {
+            final targetFile = File('${_convertedDir!.path}/$baseName.jpg');
+            await targetFile.writeAsBytes(jpgBytes);
+            debugPrint("ThumbnailCache: Successfully converted remote HEIC to JPEG: $imageId");
+            return; // Done. We have the JPEG version which is valid for Windows.
+         } else {
+            // Intentionally silent on failure to avoid log spam, getRemoteOriginalFile handles the fallback
+         }
+      }
+
+      final targetFile = File('${_convertedDir!.path}/$baseName$ext');
+      if (!await targetFile.exists()) {
+        await targetFile.writeAsBytes(bytes);
+        debugPrint("Saved remote high-res original to disk: $imageId (Format: $ext)");
+      }
+    } catch (e) {
+      debugPrint("Error saving remote original to disk: $e");
+    }
+  }
+
+  /// Isolate-friendly conversion helper
+  static Uint8List? _convertHeicToJpg(Uint8List heicBytes) {
+    try {
+      // Detailed header check for diagnostics
+      if (heicBytes.length > 12) {
+         final header = heicBytes.sublist(4, 12).map((e) => e.toRadixString(16).padLeft(2, "0")).join("");
+         final brand = String.fromCharCodes(heicBytes.sublist(8, 12));
+         debugPrint("ThumbnailCache (Compute): Decoding HEIF/HEIC. Header: $header, Brand: $brand");
+      }
+
+      // Try explicit HEIF decoder first if available in the pack
+      final decoder = img.findDecoderForData(heicBytes);
+      debugPrint("ThumbnailCache (Compute): Found decoder: ${decoder?.runtimeType}");
+
+      final image = img.decodeImage(heicBytes);
+      if (image != null) {
+        debugPrint("ThumbnailCache (Compute): Successfully decoded to ${image.width}x${image.height}. Encoding to JPG...");
+        return Uint8List.fromList(img.encodeJpg(image, quality: 90));
+      } else {
+        debugPrint("ThumbnailCache (Compute): decodeImage returned NULL for bytes length ${heicBytes.length}");
+      }
+    } catch (e) {
+      debugPrint("HEIC conversion compute error: $e");
     }
     return null;
   }

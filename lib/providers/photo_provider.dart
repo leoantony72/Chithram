@@ -1052,7 +1052,10 @@ class PhotoProvider with ChangeNotifier {
                          imageId: old.imageId, userId: old.userId, album: old.album,
                          width: old.width, height: old.height, size: old.size,
                          latitude: lat, longitude: lng,
-                         originalUrl: old.originalUrl, thumb256Url: old.thumb256Url, thumb64Url: old.thumb64Url,
+                         originalUrl: old.originalUrl, 
+                         thumb1024Url: old.thumb1024Url,
+                         thumb256Url: old.thumb256Url, 
+                         thumb64Url: old.thumb64Url, mimeType: old.mimeType,
                          sourceId: old.sourceId, createdAt: old.createdAt, isDeleted: old.isDeleted
                       );
                    }
@@ -1115,7 +1118,10 @@ class PhotoProvider with ChangeNotifier {
                            imageId: old.imageId, userId: old.userId, album: cloudTarget,
                            width: old.width, height: old.height, size: old.size,
                            latitude: old.latitude, longitude: old.longitude,
-                           originalUrl: old.originalUrl, thumb256Url: old.thumb256Url, thumb64Url: old.thumb64Url,
+                           originalUrl: old.originalUrl, 
+                           thumb1024Url: old.thumb1024Url,
+                           thumb256Url: old.thumb256Url, 
+                           thumb64Url: old.thumb64Url, mimeType: old.mimeType,
                            sourceId: old.sourceId, createdAt: old.createdAt, isDeleted: old.isDeleted
                         );
                      }
@@ -1211,8 +1217,9 @@ class PhotoProvider with ChangeNotifier {
               latitude: old.latitude,
               longitude: old.longitude,
               originalUrl: old.originalUrl,
+              thumb1024Url: old.thumb1024Url,
               thumb256Url: old.thumb256Url,
-              thumb64Url: old.thumb64Url,
+              thumb64Url: old.thumb64Url, mimeType: old.mimeType,
               sourceId: old.sourceId,
               createdAt: old.createdAt,
               isDeleted: old.isDeleted,
