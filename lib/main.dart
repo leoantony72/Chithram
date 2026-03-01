@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -19,6 +20,10 @@ import 'ui/pages/places_page.dart';
 import 'ui/pages/place_details_page.dart';
 import 'ui/pages/place_grid_page.dart';
 import 'ui/pages/image_edit_page.dart';
+import 'ui/pages/shared_page.dart';
+import 'ui/pages/shared_viewer_page.dart';
+import 'ui/pages/user_profile_page.dart';
+import 'services/share_service.dart';
 import 'screens/auth_screen.dart';
 import 'models/gallery_item.dart';
 
@@ -83,6 +88,14 @@ final GoRouter _router = GoRouter(
             ),
           ],
         ),
+        StatefulShellBranch(
+          routes: <RouteBase>[
+            GoRoute(
+              path: '/shared',
+              builder: (BuildContext context, GoRouterState state) => const SharedPage(),
+            ),
+          ],
+        ),
       ],
     ),
     GoRoute(
@@ -135,8 +148,17 @@ final GoRouter _router = GoRouter(
     GoRoute(
       path: '/edit',
       builder: (context, state) {
-        final asset = state.extra as AssetEntity;
-        return ImageEditPage(asset: asset);
+        final extra = state.extra;
+        if (extra is AssetEntity) {
+          return ImageEditPage(asset: extra);
+        } else if (extra is Map<String, dynamic>) {
+          return ImageEditPage(
+            asset: extra['asset'] as AssetEntity?,
+            file: extra['file'] as File?,
+            remoteImageId: extra['remoteImageId'] as String?,
+          );
+        }
+        throw Exception("Invalid argument for /edit: $extra");
       },
     ),
     GoRoute(
@@ -173,6 +195,24 @@ final GoRouter _router = GoRouter(
     GoRoute(
       path: '/auth',
       builder: (context, state) => const AuthScreen(),
+    ),
+    GoRoute(
+      path: '/shared_viewer',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return SharedViewerPage(
+          bytes: extra['bytes'] as Uint8List,
+          share: extra['share'] as ShareItem,
+          senderUsername: extra['senderUsername'] as String,
+        );
+      },
+    ),
+    GoRoute(
+      path: '/user_profile',
+      builder: (context, state) {
+        final username = state.extra as String;
+        return UserProfilePage(username: username);
+      },
     ),
   ],
 );

@@ -1,14 +1,23 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:image/image.dart' as img;
 import 'package:uuid/uuid.dart';
+import '../../services/thumbnail_cache.dart';
+import '../../providers/photo_provider.dart';
+import 'package:provider/provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import '../../services/backup_service.dart';
 
 class ImageEditPage extends StatefulWidget {
-  final AssetEntity asset;
-  const ImageEditPage({super.key, required this.asset});
+  final AssetEntity? asset;
+  final File? file;
+  final String? remoteImageId;
+  const ImageEditPage({super.key, this.asset, this.file, this.remoteImageId});
 
   @override
   State<ImageEditPage> createState() => _ImageEditPageState();
@@ -19,7 +28,8 @@ class _ImageEditPageState extends State<ImageEditPage> {
   bool _isSaving = false;
   int _rotationCount = 0;
   bool _isFlipped = false;
-  File? _imageFile;
+  Uint8List? _imageBytes;
+  File? _imageFile; // Keep for path reference
   bool _isLoadingFile = true;
 
   @override
@@ -29,12 +39,30 @@ class _ImageEditPageState extends State<ImageEditPage> {
   }
 
   Future<void> _loadFile() async {
-    final file = await widget.asset.file;
-    if (mounted) {
-      setState(() {
-        _imageFile = file;
-        _isLoadingFile = false;
-      });
+    File? file = widget.file;
+
+    if (file == null && widget.asset != null) {
+      if (Platform.isWindows) {
+        file = await ThumbnailCache().getConvertedHighResFile(widget.asset!);
+      }
+      file ??= await widget.asset!.file;
+    }
+
+    if (file != null && await file.exists()) {
+      final bytes = await file.readAsBytes();
+      if (mounted) {
+        setState(() {
+          _imageFile = file;
+          _imageBytes = bytes;
+          _isLoadingFile = false;
+        });
+      }
+    } else {
+      if (mounted) {
+        setState(() {
+          _isLoadingFile = false;
+        });
+      }
     }
   }
 
@@ -60,62 +88,141 @@ class _ImageEditPageState extends State<ImageEditPage> {
 
       final Rect? cropRect = state.getCropRect();
       final Uint8List? rawData = state.rawImageData;
-      if (rawData == null || cropRect == null) return;
-
-      // Perform crop and rotate in background/compute if it's too heavy
-      // For now, using the image package
-      final img.Image? originalImage = img.decodeImage(rawData);
-      if (originalImage == null) return;
-
-      // Apply transformations from editor state
-      img.Image transformed = originalImage;
-      
-      // Handle rotation manually tracked
-      if (_rotationCount != 0) {
-        transformed = img.copyRotate(transformed, angle: (_rotationCount * 90));
+      if (rawData == null || cropRect == null) {
+        throw Exception("Image data not ready. Please wait a moment.");
       }
 
-      // Handle flip
-      if (_isFlipped) {
-        transformed = img.flip(transformed, direction: img.FlipDirection.horizontal);
-      }
+      // offload heavy processing to isolate
+      final Uint8List editedBytes = await compute(_processImage, {
+        'rawData': rawData,
+        'cropRect': {
+          'left': cropRect.left,
+          'top': cropRect.top,
+          'width': cropRect.width,
+          'height': cropRect.height,
+        },
+        'rotationCount': _rotationCount,
+        'isFlipped': _isFlipped,
+      });
 
-      // Handle cropping
-      transformed = img.copyCrop(
-        transformed,
-        x: cropRect.left.toInt(),
-        y: cropRect.top.toInt(),
-        width: cropRect.width.toInt(),
-        height: cropRect.height.toInt(),
-      );
+      if (editedBytes.isEmpty) throw Exception("Failed to process image.");
 
-      final Uint8List editedBytes = Uint8List.fromList(img.encodeJpg(transformed));
-
-      if (overwrite) {
-        // Workaround for "Permission Denied" on Android/iOS (Scoped Storage)
-        // 1. Save edited image as a new asset
-        final AssetEntity? newAsset = await PhotoManager.editor.saveImage(
-          editedBytes,
-          title: widget.asset.title ?? 'edited_${const Uuid().v4()}',
-          filename: 'edited_${const Uuid().v4()}.jpg',
-        );
-        
-        if (newAsset != null) {
-          // 2. Delete the original asset using IDs (requires user confirmation on some platforms)
-          await PhotoManager.editor.deleteWithIds([widget.asset.id]);
-        } else {
-          throw Exception("Failed to save edited image.");
+      if (Platform.isWindows) {
+        // --- Windows Specific Saving ---
+        File? sourceFile = _imageFile;
+        // If we have an asset, try to get its original file for overwriting
+        if (overwrite && widget.asset != null) {
+           sourceFile = await widget.asset!.file;
         }
-      } else {
-        // Save as copy
-        final AssetEntity? newAsset = await PhotoManager.editor.saveImage(
-          editedBytes,
-          title: 'edited_${widget.asset.title ?? "image"}',
-          filename: 'edited_${const Uuid().v4()}.jpg',
-        );
+
+        if (sourceFile == null) throw Exception("Could not locate source file for saving.");
+
+        String targetPath;
+        bool isTemp = sourceFile.path.contains('Temp') || sourceFile.path.contains('edit_');
+
+        if (overwrite && !isTemp) {
+          targetPath = sourceFile.path;
+          await sourceFile.writeAsBytes(editedBytes);
+        } else {
+          // Saving a copy OR saving a temporary file (remote-originated)
+          Directory? baseDir;
+          if (isTemp || Platform.isWindows) {
+             // For Windows, default to a visible "Ninta" folder in Pictures if possible
+             final userProfile = Platform.environment['USERPROFILE'];
+             if (userProfile != null) {
+               final pictures = Directory(p.join(userProfile, 'Pictures', 'Ninta'));
+               if (!await pictures.exists()) await pictures.create(recursive: true);
+               baseDir = pictures;
+             }
+          }
+          
+          baseDir ??= sourceFile.parent;
+          baseDir ??= await getDownloadsDirectory();
+
+          final originalName = isTemp 
+              ? 'Ninta_Edit' 
+              : p.basenameWithoutExtension(sourceFile.path);
+          final ext = p.extension(sourceFile.path).isEmpty ? '.jpg' : p.extension(sourceFile.path);
+          targetPath = p.join(baseDir!.path, '${originalName}_edited_${const Uuid().v4().substring(0, 8)}$ext');
+          
+          await File(targetPath).writeAsBytes(editedBytes);
+        }
+
+        // --- Cloud Sync ---
+        try {
+          final String? rid = widget.remoteImageId ?? (widget.asset?.id.startsWith('cloud_') == true ? widget.asset!.id.substring(6) : null);
+          if (rid != null) {
+            await BackupService().uploadEditedImage(
+              bytes: editedBytes,
+              originalImageId: rid,
+              isNewCopy: !overwrite,
+            );
+          }
+        } catch (e) {
+          debugPrint("Cloud Sync Error: $e");
+          // Non-fatal, image is still saved locally
+        }
         
-        if (newAsset == null) {
-           throw Exception("Failed to save edited copy.");
+        // Invalidate thumbnail cache if overwriting
+        if (overwrite && widget.asset != null) {
+          await ThumbnailCache().invalidate(widget.asset!.id);
+        }
+        
+        // Refresh provider to pick up changes
+        final provider = Provider.of<PhotoProvider>(context, listen: false);
+        await provider.fetchAssets(force: true);
+      } else {
+        // --- Mobile Specific Saving (PhotoManager) ---
+        AssetEntity? savedAsset;
+        if (overwrite && widget.asset != null) {
+          savedAsset = await PhotoManager.editor.saveImage(
+            editedBytes,
+            title: widget.asset!.title ?? 'edited_${const Uuid().v4()}',
+            filename: 'edited_${const Uuid().v4()}.jpg',
+          );
+          if (savedAsset != null) {
+            await PhotoManager.editor.deleteWithIds([widget.asset!.id]);
+          }
+        } else {
+          final title = widget.asset?.title ?? 'edited_${const Uuid().v4().substring(0,8)}';
+          savedAsset = await PhotoManager.editor.saveImage(
+            editedBytes,
+            title: 'edited_$title',
+            filename: 'edited_${const Uuid().v4()}.jpg',
+          );
+        }
+
+        if (savedAsset == null) {
+           throw Exception("Failed to save edited image.");
+        }
+
+        // --- Cloud Sync (Mobile) ---
+        try {
+          final String? rid = widget.remoteImageId ?? (widget.asset?.id.startsWith('cloud_') == true ? widget.asset!.id.substring(6) : null);
+          if (rid != null) {
+            await BackupService().uploadEditedImage(
+              bytes: editedBytes,
+              originalImageId: rid,
+              isNewCopy: !overwrite,
+            );
+          }
+        } catch (e) {
+          debugPrint("Cloud Sync Error (Mobile): $e");
+        }
+
+        // Invalidate thumbnail cache if overwriting
+        if (overwrite && widget.asset != null) {
+          await ThumbnailCache().invalidate(widget.asset!.id);
+        }
+
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+             const SnackBar(
+               content: Text("Image saved to gallery"),
+               behavior: SnackBarBehavior.floating,
+               backgroundColor: Color(0xFF1A1A1A),
+             ),
+           );
         }
       }
 
@@ -131,6 +238,40 @@ class _ImageEditPageState extends State<ImageEditPage> {
       }
     } finally {
       if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  static Uint8List _processImage(Map<String, dynamic> params) {
+    try {
+      final Uint8List rawData = params['rawData'];
+      final Map<String, dynamic> cropParams = params['cropRect'];
+      final int rotationCount = params['rotationCount'];
+      final bool isFlipped = params['isFlipped'];
+
+      img.Image? image = img.decodeImage(rawData);
+      if (image == null) return Uint8List(0);
+
+      img.Image transformed = image;
+      if (rotationCount != 0) {
+        transformed = img.copyRotate(transformed, angle: rotationCount * 90);
+      }
+
+      if (isFlipped) {
+        transformed = img.flip(transformed, direction: img.FlipDirection.horizontal);
+      }
+
+      transformed = img.copyCrop(
+        transformed,
+        x: cropParams['left']!.toInt(),
+        y: cropParams['top']!.toInt(),
+        width: cropParams['width']!.toInt(),
+        height: cropParams['height']!.toInt(),
+      );
+
+      return Uint8List.fromList(img.encodeJpg(transformed, quality: 90));
+    } catch (e) {
+      debugPrint("Isolate process error: $e");
+      return Uint8List(0);
     }
   }
 
@@ -174,16 +315,15 @@ class _ImageEditPageState extends State<ImageEditPage> {
     if (_isLoadingFile) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_imageFile == null) {
+    if (_imageBytes == null) {
       return const Center(child: Text("Error loading file", style: TextStyle(color: Colors.white)));
     }
 
-    return ExtendedImage.file(
-      _imageFile!,
+    return ExtendedImage.memory(
+      _imageBytes!,
       fit: BoxFit.contain,
       mode: ExtendedImageMode.editor,
       extendedImageEditorKey: _editorKey,
-      cacheRawData: true,
       initEditorConfigHandler: (state) {
         return EditorConfig(
           maxScale: 8.0,

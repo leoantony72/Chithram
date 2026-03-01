@@ -15,9 +15,39 @@ class ModelService {
   static const String faceRecognitionModelName = 'face-recognition';
   static const String semanticSearchModelName = 'semantic-search';
 
+  static const String _lastCheckKey = 'last_model_update_check';
+
   Future<bool> ensureModelsDownloaded() async {
     if (kIsWeb) return true; // Web doesn't need downloaded models
+
+    final prefs = await SharedPreferences.getInstance();
+    final lastCheckMillis = prefs.getInt(_lastCheckKey) ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
     
+    // Only check for updates once every 24 hours if files exist
+    final bool shouldSkipNetwork = (now - lastCheckMillis) < (24 * 60 * 60 * 1000);
+    
+    // Check if all models exist locally
+    final docsDir = await getApplicationDocumentsDirectory();
+    final List<String> modelPaths = [
+      p.join(docsDir.path, '$faceDetectionModelName.onnx'),
+      p.join(docsDir.path, '$faceRecognitionModelName.onnx'),
+      p.join(docsDir.path, '$semanticSearchModelName.onnx'),
+    ];
+    
+    bool allExist = true;
+    for (var path in modelPaths) {
+      if (!await File(path).exists()) {
+        allExist = false;
+        break;
+      }
+    }
+
+    if (shouldSkipNetwork && allExist) {
+       debugPrint('ModelService: Skipping network update check (last check < 24h ago).');
+       return true;
+    }
+
     // Run all checks in parallel to avoid sequential timeouts
     final results = await Future.wait([
       _downloadModel(faceDetectionModelName),
@@ -25,7 +55,12 @@ class ModelService {
       _downloadModel(semanticSearchModelName),
     ]);
     
-    return results.every((success) => success);
+    final allSuccess = results.every((success) => success);
+    if (allSuccess) {
+       await prefs.setInt(_lastCheckKey, now);
+    }
+    
+    return allSuccess;
   }
 
   Future<bool> _downloadModel(String modelName) async {

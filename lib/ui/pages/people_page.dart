@@ -75,17 +75,23 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 
   Future<void> _initializeServices() async {
-    final success = await _modelService.ensureModelsDownloaded();
-    if (!success && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to connect to backend. Is it running?'),
-          duration: Duration(seconds: 5),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-    await _faceService.initialize();
+    // Check models but don't block UI
+    _modelService.ensureModelsDownloaded().then((success) {
+      if (!success && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to connect to backend. Is it running?'),
+            duration: Duration(seconds: 5),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    });
+
+    // Defer heavy face model loading to keep startup fluid
+    Future.delayed(const Duration(seconds: 10), () async {
+       if (mounted) await _faceService.initialize();
+    });
   }
 
   Future<void> _loadClusters() async {

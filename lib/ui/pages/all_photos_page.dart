@@ -65,7 +65,10 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
         provider.checkPermission();
       } else {
         provider.fetchRemotePhotos();
-        provider.startSemanticIndexing();
+        // Defer heavy indexing to keep startup fluid
+        Future.delayed(const Duration(seconds: 5), () {
+          if (mounted) provider.startSemanticIndexing();
+        });
       }
     });
   }

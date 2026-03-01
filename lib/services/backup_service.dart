@@ -798,16 +798,172 @@ class BackupService {
         headers: {'Content-Type': 'application/json'},
         body: requestBody,
       );
-
-      if (response.statusCode == 200) {
-        print('BackupService: Successfully updated location for ${imageIds.length} images.');
-        return true;
-      } else {
-        print('BackupService: Failed to update location. Code: ${response.statusCode}, Body: ${response.body}');
-        return false;
-      }
+      return response.statusCode == 200;
     } catch (e) {
-      print('BackupService: Error during updateCloudLocation: $e');
+      print('BackupService: Error updating cloud location: $e');
+      return false;
+    }
+  }
+
+  /// Uploads a shared image (from bytes) to the cloud.
+  Future<bool> uploadSharedImage(Uint8List bytes, String fileName) async {
+    try {
+      final session = await _auth.loadSession();
+      if (session == null) return false;
+
+      final userId = session['username'] as String;
+      final masterKeyBytes = session['masterKey'] as Uint8List;
+      final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
+
+      final checksum = _calculateChecksum(bytes);
+      // Check for duplicates first
+      final cloudChecksums = await _fetchCloudChecksums(userId);
+      if (cloudChecksums.contains(checksum)) {
+        print('BackupService: Shared image already in cloud (checksum match)');
+        return true; 
+      }
+
+      final imageId = _generateUUID();
+      final decodedImage = img.decodeImage(bytes);
+      if (decodedImage == null) return false;
+
+      final width = decodedImage.width;
+      final height = decodedImage.height;
+
+      // Generate thumbnails
+      final thumb256 = img.copyResizeCropSquare(decodedImage, size: 256);
+      final thumb256Bytes = Uint8List.fromList(img.encodeJpg(thumb256, quality: 80));
+
+      final thumb64 = img.copyResizeCropSquare(decodedImage, size: 64);
+      final thumb64Bytes = Uint8List.fromList(img.encodeJpg(thumb64, quality: 60));
+
+      // Get upload URLs
+      final variants = ['original', 'thumb_256', 'thumb_64'];
+      final urls = await _getUploadUrls(userId, imageId, variants);
+      if (urls == null || urls.length != 3) return false;
+
+      // Encrypt and upload
+      final uploads = [
+        _encryptAndUpload(urls['original']!, bytes, masterKey, 'original'),
+        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
+        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
+      ];
+
+      final results = await Future.wait(uploads);
+      if (results.contains(false)) return false;
+
+      // Register metadata
+      final uri = Uri.parse('$_baseUrl/images/register');
+      final now = DateTime.now().toUtc().toIso8601String();
+      
+      final body = jsonEncode({
+        'image_id': imageId,
+        'user_id': userId,
+        'created_at': now,
+        'modified_at': now,
+        'width': width,
+        'height': height,
+        'size': bytes.length,
+        'checksum': checksum,
+        'source_id': 'shared_$imageId',
+        'latitude': 0.0,
+        'longitude': 0.0,
+        'mime_type': 'image/jpeg',
+        'album': 'Shared with me',
+        'is_deleted': false,
+      });
+
+      final response = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: body,
+      );
+
+      return response.statusCode == 200;
+    } catch (e) {
+      print('BackupService: Error uploading shared image: $e');
+      return false;
+    }
+  }
+
+  /// Uploads or updates an edited image in the cloud.
+  Future<bool> uploadEditedImage({
+    required Uint8List bytes,
+    required String originalImageId,
+    required bool isNewCopy,
+  }) async {
+    try {
+      final session = await _auth.loadSession();
+      if (session == null) return false;
+
+      final userId = session['username'] as String;
+      final masterKeyBytes = session['masterKey'] as Uint8List;
+      final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
+
+      final checksum = _calculateChecksum(bytes);
+      final decodedImage = img.decodeImage(bytes);
+      if (decodedImage == null) return false;
+
+      final width = decodedImage.width;
+      final height = decodedImage.height;
+      final String imageId = isNewCopy ? _generateUUID() : originalImageId;
+
+      // Generate thumbnails
+      final thumb256 = img.copyResizeCropSquare(decodedImage, size: 256);
+      final thumb256Bytes = Uint8List.fromList(img.encodeJpg(thumb256, quality: 80));
+
+      final thumb64 = img.copyResizeCropSquare(decodedImage, size: 64);
+      final thumb64Bytes = Uint8List.fromList(img.encodeJpg(thumb64, quality: 60));
+
+      final thumb1024 = img.copyResize(decodedImage, width: 1024);
+      final thumb1024Bytes = Uint8List.fromList(img.encodeJpg(thumb1024, quality: 85));
+
+      // Get upload URLs
+      final variants = ['original', 'thumb_1024', 'thumb_256', 'thumb_64'];
+      final urls = await _getUploadUrls(userId, imageId, variants);
+      if (urls == null || urls.length != 4) return false;
+
+      // Encrypt and upload
+      final uploads = [
+        _encryptAndUpload(urls['original']!, bytes, masterKey, 'original'),
+        _encryptAndUpload(urls['thumb_1024']!, thumb1024Bytes, masterKey, 'thumb_1024'),
+        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
+        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
+      ];
+
+      final results = await Future.wait(uploads);
+      if (results.contains(false)) return false;
+
+      // Register metadata
+      final uri = Uri.parse('$_baseUrl/images/register');
+      final now = DateTime.now().toUtc().toIso8601String();
+      
+      final body = jsonEncode({
+        'image_id': imageId,
+        'user_id': userId,
+        'created_at': now,
+        'modified_at': now,
+        'width': width,
+        'height': height,
+        'size': bytes.length,
+        'checksum': checksum,
+        'source_id': isNewCopy ? 'ninta_edit_$imageId' : 'ninta_update_$imageId',
+        'latitude': 0.0,
+        'longitude': 0.0,
+        'mime_type': 'image/jpeg',
+        'album': 'Edits',
+        'is_deleted': false,
+      });
+
+      final response = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: body,
+      );
+
+      return response.statusCode == 200;
+    } catch (e) {
+      print('BackupService: Error in uploadEditedImage: $e');
       return false;
     }
   }

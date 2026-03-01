@@ -16,9 +16,10 @@ import (
 // ImageResponse mirrors the database model but adds Signed URLs
 type ImageResponse struct {
 	models.Image
-	OriginalURL string `json:"original_url"`
-	Thumb256URL string `json:"thumb_256_url"`
-	Thumb64URL  string `json:"thumb_64_url"`
+	OriginalURL   string `json:"original_url"`
+	Thumb1024URL  string `json:"thumb_1024_url"`
+	Thumb256URL   string `json:"thumb_256_url"`
+	Thumb64URL    string `json:"thumb_64_url"`
 }
 
 type AlbumResponse struct {
@@ -102,10 +103,12 @@ func ListImages(c *gin.Context) {
 
 		// Adjusted to Originals and Thumbnails folders
 		originalPath := fmt.Sprintf("%s/images/originals/%s.enc", img.UserID, img.ImageID)
+		thumb1024Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_1024.enc", img.UserID, img.ImageID)
 		thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", img.UserID, img.ImageID)
 		thumb64Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_64.enc", img.UserID, img.ImageID)
 
 		resp.OriginalURL, _ = services.GetPresignedURL(originalPath, expiry)
+		resp.Thumb1024URL, _ = services.GetPresignedURL(thumb1024Path, expiry)
 		resp.Thumb256URL, _ = services.GetPresignedURL(thumb256Path, expiry)
 		resp.Thumb64URL, _ = services.GetPresignedURL(thumb64Path, expiry)
 
@@ -153,10 +156,12 @@ func SyncImages(c *gin.Context) {
 		if !img.IsDeleted {
 			expiry := 7 * 24 * time.Hour
 			originalPath := fmt.Sprintf("%s/images/originals/%s.enc", img.UserID, img.ImageID)
+			thumb1024Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_1024.enc", img.UserID, img.ImageID)
 			thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", img.UserID, img.ImageID)
 			thumb64Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_64.enc", img.UserID, img.ImageID)
 
 			resp.OriginalURL, _ = services.GetPresignedURL(originalPath, expiry)
+			resp.Thumb1024URL, _ = services.GetPresignedURL(thumb1024Path, expiry)
 			resp.Thumb256URL, _ = services.GetPresignedURL(thumb256Path, expiry)
 			resp.Thumb64URL, _ = services.GetPresignedURL(thumb64Path, expiry)
 		}
@@ -343,10 +348,12 @@ func GetSingleImage(c *gin.Context) {
 	expiry := 7 * 24 * time.Hour
 
 	originalPath := fmt.Sprintf("%s/images/originals/%s.enc", img.UserID, img.ImageID)
+	thumb1024Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_1024.enc", img.UserID, img.ImageID)
 	thumb256Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", img.UserID, img.ImageID)
 	thumb64Path := fmt.Sprintf("%s/images/thumbnails/%s_thumb_64.enc", img.UserID, img.ImageID)
 
 	resp.OriginalURL, _ = services.GetPresignedURL(originalPath, expiry)
+	resp.Thumb1024URL, _ = services.GetPresignedURL(thumb1024Path, expiry)
 	resp.Thumb256URL, _ = services.GetPresignedURL(thumb256Path, expiry)
 	resp.Thumb64URL, _ = services.GetPresignedURL(thumb64Path, expiry)
 

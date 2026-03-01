@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import '../../providers/photo_provider.dart';
 import '../../providers/selection_provider.dart';
 import 'package:sodium_libs/sodium_libs_sumo.dart';
 import '../../services/thumbnail_cache.dart';
@@ -165,9 +166,21 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
     _isLoading = true;
 
     final item = _effectiveItem;
+    
+    // --- LOCAL ASSET MAPPING (High-Res optimization) ---
+    // If this is a remote item but it originated from THIS device (sourceId),
+    // try to find the local asset and use its high-res data instead of cloud HEIC.
+    AssetEntity? localMapped;
+    if (widget.isHighRes && item.type == GalleryItemType.remote && item.remote?.sourceId != null) {
+       final provider = Provider.of<PhotoProvider>(context, listen: false);
+       localMapped = provider.findLocalAssetById(item.remote!.sourceId!);
+       if (localMapped != null) {
+          debugPrint("ThumbnailWidget: Local Mapping Hit for Remote ${item.id} -> Local ${localMapped.id}");
+       }
+    }
 
-    if (item.type == GalleryItemType.local) {
-      final entity = item.local!;
+    if (item.type == GalleryItemType.local || localMapped != null) {
+      final entity = localMapped ?? item.local!;
       if (widget.isHighRes) {
          try {
            if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
@@ -257,17 +270,19 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
             final isHeicOriginal = remote.mimeType.contains('heic') || remote.mimeType.contains('heif');
             
             if (isWindowsOrLinux && isHeicOriginal) {
+                // Windows cannot decode HEIC. Use best available JPEG: 1024px > 256px > 64px.
+                // Never download HEIC original - conversion always fails.
                 if (remote.thumb1024Url.isNotEmpty) {
-                    // Modern Upload: Use the 1024px High-Res JPEG (Sharp & Native)
                     url = remote.thumb1024Url;
                     _isActualHighRes = true;
-                    debugPrint("ThumbnailWidget: Using 1024px JPEG High-Res for Windows -> $url");
-                } else {
-                    // Legacy HEIC on Windows: User wants high-res, so we download original HEIC 
-                    // and let ThumbnailCache perform background JPEG conversion.
-                    url = remote.originalUrl;
+                    debugPrint("ThumbnailWidget: Using 1024px JPEG for Windows HEIC (sharp) -> $url");
+                } else if (remote.thumb256Url.isNotEmpty) {
+                    url = remote.thumb256Url;
                     _isActualHighRes = true;
-                    debugPrint("ThumbnailWidget: Forcing HEIC Original download to achieve high-res Journey cover on Windows.");
+                    debugPrint("ThumbnailWidget: Using 256px JPEG for Windows HEIC (legacy, no 1024) -> $url");
+                } else {
+                    url = remote.thumb64Url;
+                    _isActualHighRes = true;
                 }
             } else if (remote.originalUrl.isNotEmpty) {
                 url = remote.originalUrl;
@@ -287,11 +302,35 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
                // --- Save to High-Res Disk Cache (only genuine high-res content) ---
                await ThumbnailCache().saveRemoteOriginalFile(remote.imageId, data);
                // Re-fetch to use as File (more RAM efficient than bytes for large cards)
-               final cachedFile = await ThumbnailCache().getRemoteOriginalFile(remote.imageId);
+               var cachedFile = await ThumbnailCache().getRemoteOriginalFile(remote.imageId);
+               // Windows HEIC fix: image package cannot decode HEIC. If conversion failed,
+               // fall back to thumb1024 or thumb256 (JPEG) and save as cover.
+               if (cachedFile == null &&
+                   (Platform.isWindows || Platform.isLinux) &&
+                   (remote.mimeType.contains('heic') || remote.mimeType.contains('heif'))) {
+                  debugPrint("ThumbnailWidget: HEIC conversion failed on Windows. Using JPEG thumbnail fallback.");
+                  final fallbackUrl = remote.thumb1024Url.isNotEmpty
+                      ? remote.thumb1024Url
+                      : (remote.thumb256Url.isNotEmpty ? remote.thumb256Url : remote.thumb64Url);
+                  if (fallbackUrl.isNotEmpty) {
+                    final jpegData = await BackupService().fetchAndDecryptFromUrl(fallbackUrl, key);
+                    if (mounted && jpegData != null && jpegData.isNotEmpty) {
+                      await ThumbnailCache().saveRemoteJpegFallback(remote.imageId, jpegData);
+                      cachedFile = await ThumbnailCache().getRemoteOriginalFile(remote.imageId);
+                    }
+                  }
+               }
                if (mounted && cachedFile != null) {
                   setState(() {
                      _originFile = cachedFile;
                   });
+                  return;
+               }
+               // If we still have no file but have HEIC bytes, don't use Image.memory(heic) - it fails on Windows
+               if ((Platform.isWindows || Platform.isLinux) &&
+                   (remote.mimeType.contains('heic') || remote.mimeType.contains('heif'))) {
+                  // Already tried fallback above; if we're here, fallback also failed - show placeholder
+                  setState(() => _bytes = null);
                   return;
                }
             } else {

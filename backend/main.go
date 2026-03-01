@@ -26,7 +26,7 @@ func main() {
 	// Connect to database
 	database.Connect()
 	// Auto migrate
-	database.DB.AutoMigrate(&models.User{}, &models.Image{}, &models.ModelMetadata{}, &models.ModelMetric{})
+	database.DB.AutoMigrate(&models.User{}, &models.Image{}, &models.Share{}, &models.ModelMetadata{}, &models.ModelMetric{})
 
 	// Seed initial model metadata if missing
 	seedModelMetadata()
@@ -79,6 +79,17 @@ func main() {
 	r.POST("/images/faces/register", controllers.RegisterPeopleVersion)
 	r.GET("/sync", controllers.SyncImages)
 	r.GET("/images/download/:id", controllers.DownloadImage)
+
+	// Share Endpoints (static paths before :id)
+	r.POST("/shares", controllers.CreateShare)
+	r.GET("/shares/with-me", controllers.ListSharesWithMe)
+	r.GET("/shares/by-me", controllers.ListSharesByMe)
+	r.GET("/shares/:id/upload-url", controllers.GetShareUploadURL)
+	r.GET("/shares/:id/download-url", controllers.GetShareDownloadURL)
+	r.GET("/shares/:id", controllers.GetShare)
+	r.DELETE("/shares/:id", controllers.RevokeShare)
+	r.GET("/users/search", controllers.SearchUsers)
+	r.GET("/users/:username/public-key", controllers.GetUserPublicKey)
 
 	// Federated Learning Endpoints
 	services.InitFLService()

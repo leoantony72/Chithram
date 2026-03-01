@@ -12,9 +12,12 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-var MinioClient *minio.Client
+var MinioClient *minio.Client       // Internal client — used for backend file operations
+var publicMinioClient *minio.Client // Public client — used ONLY for generating pre-signed URLs
 
-var Endpoint string // Reachable from Android units on LAN
+var Endpoint string        // Internal MinIO address (e.g. localhost:9000)
+var PublicMinioHost string // Public address clients use to reach MinIO (e.g. 192.168.18.11:9000)
+
 const (
 	AccessKeyID     = "minioadmin"
 	SecretAccessKey = "minioadmin"
@@ -25,13 +28,20 @@ const (
 func InitMinio() {
 	var err error
 
-	// Read dynamic endpoint from environment or default to localhost
 	Endpoint = os.Getenv("MINIO_HOST")
 	if Endpoint == "" {
 		Endpoint = "localhost:9000"
 	}
 
-	// Initialize minio client object.
+	// PUBLIC_MINIO_HOST: the address Android/web clients use to access MinIO directly.
+	// When set, pre-signed URLs are generated using this address so the HMAC signature
+	// is valid for the public hostname — NOT rewritten after signing (which breaks sigs).
+	PublicMinioHost = os.Getenv("PUBLIC_MINIO_HOST")
+	if PublicMinioHost == "" {
+		PublicMinioHost = Endpoint
+	}
+
+	// Internal client — for all backend-to-MinIO operations (upload, download, list)
 	MinioClient, err = minio.New(Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
 		Secure: UseSSL,
@@ -40,9 +50,24 @@ func InitMinio() {
 		log.Fatalln(err)
 	}
 
-	log.Printf("MinIO Client initialized successfully to %s\n", Endpoint)
+	// Public client — for generating pre-signed URLs that clients can actually reach.
+	// Uses the same credentials but signs with the public hostname from the start.
+	if PublicMinioHost != Endpoint {
+		publicMinioClient, err = minio.New(PublicMinioHost, &minio.Options{
+			Creds:  credentials.NewStaticV4(AccessKeyID, SecretAccessKey, ""),
+			Secure: UseSSL,
+		})
+		if err != nil {
+			log.Printf("Warning: Could not create public MinIO client for %s: %v. Falling back to internal client.", PublicMinioHost, err)
+			publicMinioClient = MinioClient
+		}
+	} else {
+		publicMinioClient = MinioClient
+	}
 
-	// Create bucket if it doesn't exist
+	log.Printf("MinIO: internal=%s, public=%s\n", Endpoint, PublicMinioHost)
+
+	// Create bucket if it doesn't exist (use internal client)
 	ctx := context.Background()
 	exists, err := MinioClient.BucketExists(ctx, BucketName)
 	if err != nil {
@@ -74,7 +99,6 @@ func ListFiles(prefix string) ([]string, error) {
 	ctx := context.Background()
 	var files []string
 
-	// List objects
 	objectCh := MinioClient.ListObjects(ctx, BucketName, minio.ListObjectsOptions{
 		Prefix:    prefix + "/",
 		Recursive: true,
@@ -89,23 +113,23 @@ func ListFiles(prefix string) ([]string, error) {
 	return files, nil
 }
 
-// GetPresignedURL generates a presigned URL for a file
+// GetPresignedURL generates a presigned GET URL using the public client so the
+// hostname in the signature matches what clients will actually connect to.
 func GetPresignedURL(objectName string, expiry time.Duration) (string, error) {
 	ctx := context.Background()
 	reqParams := make(url.Values)
-	// reqParams.Set("response-content-disposition", "attachment; filename=\"your-filename.txt\"")
 
-	presignedURL, err := MinioClient.PresignedGetObject(ctx, BucketName, objectName, expiry, reqParams)
+	presignedURL, err := publicMinioClient.PresignedGetObject(ctx, BucketName, objectName, expiry, reqParams)
 	if err != nil {
 		return "", err
 	}
 	return presignedURL.String(), nil
 }
 
-// GetPresignedPutURL generates a presigned URL for uploading a file
+// GetPresignedPutURL generates a presigned PUT URL using the public client.
 func GetPresignedPutURL(objectName string, expiry time.Duration) (string, error) {
 	ctx := context.Background()
-	presignedURL, err := MinioClient.PresignedPutObject(ctx, BucketName, objectName, expiry)
+	presignedURL, err := publicMinioClient.PresignedPutObject(ctx, BucketName, objectName, expiry)
 	if err != nil {
 		return "", err
 	}

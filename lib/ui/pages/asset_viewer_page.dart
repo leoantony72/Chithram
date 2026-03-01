@@ -12,13 +12,20 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlong;
+import 'package:sodium_libs/sodium_libs_sumo.dart';
 import '../../providers/photo_provider.dart';
 import '../../models/gallery_item.dart';
+import '../../services/share_service.dart';
+import '../../services/auth_service.dart';
+import '../../services/backup_service.dart';
+import '../../services/crypto_service.dart';
 import '../widgets/video_viewer.dart';
 import '../widgets/photo_viewer.dart';
 import '../widgets/remote_photo_viewer.dart';
+import '../widgets/share_with_user_sheet.dart';
 
 class AssetViewerPage extends StatefulWidget {
   final GalleryItem item; 
@@ -159,9 +166,11 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
           ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert, color: Colors.white),
-            onSelected: (value) {
+            onSelected: (value) async {
               if (value == 'About') {
                 _showDetails(context, currentItem);
+              } else if (value == 'ShareWithUser' && currentItem.type == GalleryItemType.remote) {
+                await _showShareWithUserDialog(context, currentItem);
               }
             },
             itemBuilder: (BuildContext context) {
@@ -176,6 +185,17 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
                     ],
                   ),
                 ),
+                if (currentItem.type == GalleryItemType.remote)
+                  const PopupMenuItem<String>(
+                    value: 'ShareWithUser',
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_add, color: Colors.black87),
+                        SizedBox(width: 8),
+                        Text('Share with user'),
+                      ],
+                    ),
+                  ),
               ];
             },
           ),
@@ -320,29 +340,127 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
         await Share.shareXFiles([XFile(file.path)], text: 'Check out this photo!');
       }
     } else {
-      // Remote - share URL
+      // Remote - share URL externally
       await Share.share(item.remote!.originalUrl, subject: 'Shared from Ninta');
     }
   }
 
+  Future<void> _showShareWithUserDialog(BuildContext context, GalleryItem item) async {
+    if (item.type != GalleryItemType.remote) return;
+
+    final remote = item.remote!;
+    final session = await AuthService().loadSession();
+    if (session == null) return;
+
+    final masterKey = SecureKey.fromList(CryptoService().sodium, session['masterKey'] as Uint8List);
+
+    final success = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => ShareWithUserSheet(
+        imageId: remote.imageId,
+        fetchImageBytes: () => BackupService().fetchAndDecryptFromUrl(remote.originalUrl, masterKey),
+        onCreateShare: (receiverUsername, shareType, imageBytes) =>
+            ShareService().createShare(
+              receiverUsername: receiverUsername,
+              imageId: remote.imageId,
+              shareType: shareType,
+              imageBytes: imageBytes,
+            ),
+      ),
+    );
+
+    if (!context.mounted) return;
+    if (success == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Shared successfully!'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.white.withOpacity(0.15),
+        ),
+      );
+    }
+  }
+
   void _onEdit(GalleryItem item) async {
-    if (item.type == GalleryItemType.local) {
-      final bool? edited = await context.push<bool>('/edit', extra: item.local);
+    PhotoProvider provider = Provider.of<PhotoProvider>(context, listen: false);
+    AssetEntity? assetToEdit = item.local;
+
+    // 1. Try to find local equivalent for remote items
+    if (item.type == GalleryItemType.remote && item.remote?.sourceId != null) {
+      assetToEdit = provider.findLocalAssetById(item.remote!.sourceId!);
+    }
+
+    if (assetToEdit != null) {
+      final bool? edited = await context.push<bool>('/edit', extra: assetToEdit);
       if (edited == true) {
         // Refresh the whole gallery because IDs or file paths have changed
-        PhotoProvider provider = Provider.of<PhotoProvider>(context, listen: false);
         await provider.fetchAssets(force: true);
-        
         if (context.mounted) {
           // It's safest to pop back to the gallery since the current viewer 
           // state (indices) might no longer match the updated asset list.
           Navigator.pop(context); 
         }
       }
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Editing remote images is coming soon!")),
-      );
+      return;
+    }
+
+    // 2. Pure Remote Edit (Download first)
+    if (item.type == GalleryItemType.remote) {
+      try {
+        final remote = item.remote!;
+        final crypto = CryptoService();
+        final session = await AuthService().loadSession();
+        if (session == null) return;
+
+        final masterKeyBytes = session['masterKey'] as Uint8List;
+        final key = SecureKey.fromList(crypto.sodium, masterKeyBytes);
+
+        // Fetch original
+        final data = await BackupService().fetchAndDecryptFromUrl(remote.originalUrl, key);
+        if (data == null) throw Exception("Failed to download high-res original.");
+
+        if (Platform.isWindows) {
+          // Windows: Save to temp file and edit
+          final tempDir = await getTemporaryDirectory();
+          final tempFile = File('${tempDir.path}/edit_${remote.imageId}.jpg');
+          await tempFile.writeAsBytes(data);
+          
+          if (context.mounted) {
+            final bool? edited = await context.push<bool>('/edit', extra: {
+              'file': tempFile,
+              'remoteImageId': remote.imageId,
+            });
+            if (edited == true) {
+               await provider.fetchAssets(force: true);
+               if (context.mounted) Navigator.pop(context);
+            }
+          }
+        } else {
+          // Mobile: Save as local asset and edit
+          final AssetEntity? newAsset = await PhotoManager.editor.saveImage(
+            data, 
+            title: remote.imageId, 
+            filename: "${remote.imageId}.jpg"
+          );
+          if (newAsset == null) throw Exception("Failed to save image to device.");
+          
+          if (context.mounted) {
+             final bool? edited = await context.push<bool>('/edit', extra: newAsset);
+             if (edited == true) {
+                await provider.fetchAssets(force: true);
+                if (context.mounted) Navigator.pop(context);
+             }
+          }
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Error: $e"), backgroundColor: Colors.redAccent),
+          );
+        }
+      }
     }
   }
 

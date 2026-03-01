@@ -25,6 +25,7 @@ import 'package:system_info2/system_info2.dart';
 import '../models/gallery_item.dart';
 import '../models/remote_image.dart';
 import '../services/semantic/semantic_service.dart';
+import '../services/semantic/indexing_worker.dart';
 
 class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> _paths = [];
@@ -137,6 +138,15 @@ class PhotoProvider with ChangeNotifier {
     } else {
       debugPrint("PhotoProvider: Cannot fetch remote photos - No session found.");
     }
+  }
+
+  /// Finds a local AssetEntity by its platform ID from the loaded assets.
+  AssetEntity? findLocalAssetById(String id) {
+    if (id.isEmpty) return null;
+    return _allItems
+        .where((item) => item.type == GalleryItemType.local)
+        .map((item) => item.local)
+        .firstWhereOrNull((entity) => entity?.id == id);
   }
 
   Future<void> refresh() async {
@@ -367,7 +377,10 @@ class PhotoProvider with ChangeNotifier {
                     await _groupAssets();
                     notifyListeners();
                     await startLocationScan();
-                    startSemanticIndexing();
+                    // Defer heavy indexing on first launch
+                    Future.delayed(const Duration(seconds: 15), () {
+                       startSemanticIndexing();
+                    });
                  }
                  
                  debugPrint("PhotoProvider: Fully cached $totalCount native OS images into SQLite offline index.");
@@ -1255,15 +1268,17 @@ class PhotoProvider with ChangeNotifier {
   }
 
   Future<void> startSemanticIndexing() async {
-    debugPrint("PhotoProvider: startSemanticIndexing called. _isSemanticIndexing: $_isSemanticIndexing, _allItems length: ${_allItems.length}");
+    debugPrint("PhotoProvider: startSemanticIndexing called.");
     if (_isSemanticIndexing || _allItems.isEmpty) {
       debugPrint("PhotoProvider: startSemanticIndexing aborted (already indexing or empty list)");
       return;
     }
-    
+
     _isSemanticIndexing = true;
     _semanticProgress = 0.0;
     notifyListeners();
+
+    SemanticIndexingWorker? worker;
 
     try {
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
@@ -1276,27 +1291,41 @@ class PhotoProvider with ChangeNotifier {
           return;
         }
       }
-      
-      await _semanticService.initialize();
-      
-      final indexableItems = _allItems.where((item) => 
+
+      // Get model path for the background isolate
+      final modelPath = await ModelService().getModelPath(ModelService.semanticSearchModelName);
+      if (modelPath == null) {
+        debugPrint("PhotoProvider: No model path found. Aborting.");
+        _isSemanticIndexing = false;
+        notifyListeners();
+        return;
+      }
+
+      // Start the background isolate — ONNX inference will run off the UI thread
+      worker = SemanticIndexingWorker();
+      final workerReady = await worker.start(modelPath);
+      if (!workerReady) {
+        debugPrint("PhotoProvider: Worker isolate failed to start. Aborting.");
+        _isSemanticIndexing = false;
+        notifyListeners();
+        return;
+      }
+      debugPrint("PhotoProvider: Background indexing worker ready.");
+
+      final indexableItems = _allItems.where((item) =>
         item.type == GalleryItemType.local || item.type == GalleryItemType.remote
       ).toList();
       debugPrint("PhotoProvider: Total indexable items: ${indexableItems.length}");
-      
-      // Batch fetch already indexed IDs to avoid individual DB queries in loop
+
+      // Batch fetch already indexed IDs
       Set<String> indexedIds = await DatabaseService().getAllSemanticIndexedIds();
       debugPrint("PhotoProvider: Already indexed count from DB: ${indexedIds.length}");
 
-      // --- Embedding Schema Version Check ---
-      // v1 = old wrong OpenAI CLIP normalization (mean/std subtraction)
-      // v2 = correct MobileCLIP2 S0 normalization (pixel/255 only)
-      // v3 = MobileCLIP2-S2 upgrade + surgical ArgMax fix + thumbnail-based indexing
-      // If version is missing or stale, wipe and re-index from scratch.
+      // Embedding schema version check
       const String embeddingVersion = '3';
       final storedVersion = await DatabaseService().getBackupSetting('embedding_version');
       if (storedVersion != embeddingVersion && indexedIds.isNotEmpty) {
-        debugPrint("PhotoProvider: Embedding version mismatch (stored=$storedVersion, expected=$embeddingVersion). Clearing stale embeddings and re-indexing.");
+        debugPrint("PhotoProvider: Embedding version mismatch. Clearing stale embeddings.");
         await DatabaseService().clearSemanticEmbeddings();
         indexedIds = {};
       }
@@ -1307,13 +1336,6 @@ class PhotoProvider with ChangeNotifier {
       int processed = 0;
       int newlyIndexed = 0;
       _semanticIndexedCount = indexedIds.length;
-
-      // --- Adaptive Memory Budget ---
-      // Calculate the desired processing speed based on device RAM.
-      // Re-evaluated every 25 images so it can speed up if user frees RAM
-      // or slow down if memory gets tight.
-      int indexingDelayMs = _getIndexingBudget();
-      debugPrint("PhotoProvider: Initial indexing budget: ${indexingDelayMs}ms delay per image.");
 
       // Prepare cloud decryption if needed
       SecureKey? masterKey;
@@ -1328,18 +1350,16 @@ class PhotoProvider with ChangeNotifier {
       }
 
       for (var item in indexableItems) {
-        if (!_isSemanticIndexing) break; // Allow stopping
-        
+        if (!_isSemanticIndexing) break;
+
         if (indexedIds.contains(item.id)) {
           processed++;
           continue;
         }
 
         Uint8List? imageBytes;
-        
+
         if (item.type == GalleryItemType.local) {
-          // Optimization: Use 512px thumbnail instead of full file.
-          // This is much faster and prevents OOM on large JPEGs.
           try {
             imageBytes = await item.local?.thumbnailDataWithOption(
               const ThumbnailOption(
@@ -1349,15 +1369,12 @@ class PhotoProvider with ChangeNotifier {
             );
           } catch (e) {
             debugPrint('PhotoProvider: Thumbnail fetch failed for ${item.id}: $e');
-            // Fallback to full file if thumbnail fails
             final file = await item.local?.file;
             if (file != null && await file.exists()) {
               imageBytes = await file.readAsBytes();
             }
           }
         } else if (item.type == GalleryItemType.remote && item.remote != null && masterKey != null && userId != null) {
-          // Use backend proxy instead of direct MinIO presigning to avoid hostname signature mismatches (403s).
-          // The Go server fetches from MinIO internally using its local address.
           final proxyUrl = '${ApiConfig().baseUrl}/images/download/${item.id}?user_id=$userId&variant=thumb_256';
           try {
             imageBytes = await BackupService().fetchAndDecryptFromUrl(proxyUrl, masterKey);
@@ -1367,46 +1384,26 @@ class PhotoProvider with ChangeNotifier {
         }
 
         if (imageBytes != null && imageBytes.isNotEmpty) {
-          debugPrint("PhotoProvider: Generating embedding for ${item.id} (${item.type})");
-          final embedding = await _semanticService.generateImageEmbeddingFromBytes(imageBytes);
+          // This runs in the background isolate — UI thread stays free
+          final embedding = await worker.embed(imageBytes);
           if (embedding.isNotEmpty) {
             await DatabaseService().saveSemanticEmbedding(item.id, embedding);
             newlyIndexed++;
             _semanticIndexedCount++;
-            debugPrint("PhotoProvider: Successfully indexed ${item.id}. Count: $_semanticIndexedCount");
-          } else {
-            debugPrint("PhotoProvider: Embedding generation failed/returned empty for ${item.id}");
           }
-        } else {
-           debugPrint("PhotoProvider: imageBytes null or empty for ${item.id}");
         }
-        
+
         processed++;
         _semanticProgress = processed / indexableItems.length;
-        if (processed % 10 == 0 || newlyIndexed % 5 == 0) notifyListeners();
-        
-        // Re-evaluate memory budget every 25 processed images so the loop
-        // can speed up if the user frees RAM, or throttle if memory gets tight.
-        if (processed % 25 == 0) {
-          final int newBudget = _getIndexingBudget();
-          if (newBudget != indexingDelayMs) {
-            debugPrint("PhotoProvider: Memory budget updated: ${indexingDelayMs}ms → ${newBudget}ms.");
-            indexingDelayMs = newBudget;
-          }
-        }
-        
-        // Yield — delay is dynamically adjusted by memory budget
-        if (indexingDelayMs > 0) {
-          await Future.delayed(Duration(milliseconds: indexingDelayMs));
-        } else {
-          await Future.delayed(Duration.zero);
-        }
+        // Only rebuild UI every 20 images
+        if (processed % 20 == 0) notifyListeners();
       }
-      
+
       debugPrint("Semantic Indexing Complete. Total indexed: $_semanticIndexedCount. Newly indexed: $newlyIndexed.");
     } catch (e) {
       debugPrint("Semantic Indexing Error: $e");
     } finally {
+      worker?.dispose();
       _isSemanticIndexing = false;
       notifyListeners();
     }
@@ -1527,22 +1524,21 @@ class PhotoProvider with ChangeNotifier {
         return 750;
       }
 
-      // Scale primarily on total RAM (device tier)
       if (totalMb >= 8192) {
-        debugPrint("PhotoProvider: Memory Budget — HIGH-END device. Full speed (0ms delay).");
-        return 0;
+        debugPrint("PhotoProvider: Memory Budget — HIGH-END device.");
+        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 0 : 80; // Android still needs breathing room
       } else if (totalMb >= 4096) {
-        debugPrint("PhotoProvider: Memory Budget — MID-HIGH device. Fast speed (10ms delay).");
-        return 10;
+        debugPrint("PhotoProvider: Memory Budget — MID-HIGH device.");
+        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 10 : 100;
       } else if (totalMb >= 2048) {
-        debugPrint("PhotoProvider: Memory Budget — MID device. Normal speed (50ms delay).");
-        return 50;
+        debugPrint("PhotoProvider: Memory Budget — MID device.");
+        return 150;
       } else if (totalMb >= 1024) {
-        debugPrint("PhotoProvider: Memory Budget — LOW-MID device. Reduced speed (250ms delay).");
-        return 250;
+        debugPrint("PhotoProvider: Memory Budget — LOW-MID device.");
+        return 300;
       } else {
-        debugPrint("PhotoProvider: Memory Budget — LOW-END device. Careful speed (1000ms delay).");
-        return 1000;
+        debugPrint("PhotoProvider: Memory Budget — LOW-END device.");
+        return 1200;
       }
     } catch (e) {
       debugPrint("PhotoProvider: Memory Budget — Failed to read system info. Using safe default (100ms).");

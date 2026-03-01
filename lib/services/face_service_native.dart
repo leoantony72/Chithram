@@ -40,21 +40,31 @@ class FaceService {
     final recModelPath = await _modelService.getModelPath(ModelService.faceRecognitionModelName);
 
     if (recModelPath != null) {
-      try {
-        final sessionOptions = OrtSessionOptions();
-        
-        // Workaround for Windows ONNX Runtime FFI char* vs wchar_t* string decoding bug
-        // which completely corrupts file paths like "C:\Users\...".
-        // Instead of passing the string path, we load the raw bytes directly in Dart memory!
-        final modelBytes = await File(recModelPath).readAsBytes();
-        _recognitionSession = OrtSession.fromBuffer(modelBytes, sessionOptions);
-        
-        print('FaceService: Recognition model loaded successfully from buffer.');
-      } catch (e) {
-        print('FaceService: Error loading recognition model: $e');
-      }
+      await _loadRecognitionModel(recModelPath);
     } else {
       print('FaceService: Recognition model not found.');
+    }
+  }
+
+  Future<void> _loadRecognitionModel(String path) async {
+    final sessionOptions = OrtSessionOptions();
+    
+    // 1. Try file-based loading (Memory Efficient)
+    try {
+      _recognitionSession = OrtSession.fromFile(File(path), sessionOptions);
+      print('FaceService: Recognition model loaded successfully from file.');
+      return;
+    } catch (e) {
+      print('FaceService: fromFile failed, trying fallback: $e');
+    }
+
+    // 2. Fallback to buffer-based loading
+    try {
+      final modelBytes = await File(path).readAsBytes();
+      _recognitionSession = OrtSession.fromBuffer(modelBytes, sessionOptions);
+      print('FaceService: Recognition model loaded from buffer fallback.');
+    } catch (e) {
+      print('FaceService: All recognition loading attempts failed: $e');
     }
   }
 

@@ -78,4 +78,15 @@ class CryptoService {
   SecureKey restoreKey(Uint8List bytes) {
     return sodium.secureCopy(bytes);
   }
+
+  /// Encrypt message so only recipient (with private key) can decrypt. Uses crypto_box_seal.
+  /// recipientPublicKey: raw 32 bytes (base64 decoded if from API)
+  Uint8List sealForRecipient(Uint8List message, Uint8List recipientPublicKey) {
+    return sodium.crypto.box.seal(message: message, publicKey: recipientPublicKey);
+  }
+
+  /// Decrypt message sealed for us. Uses crypto_box_seal_open.
+  Uint8List unsealFromSender(Uint8List cipherText, Uint8List ourPublicKey, SecureKey ourSecretKey) {
+    return sodium.crypto.box.sealOpen(cipherText: cipherText, publicKey: ourPublicKey, secretKey: ourSecretKey);
+  }
 }

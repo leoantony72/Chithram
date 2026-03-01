@@ -23,39 +23,52 @@ class SemanticService {
     OrtEnv.instance.init();
     await _tokenizer.initialize();
     
+    final foundPath = await _findModelPath();
+    if (foundPath == null) {
+      debugPrint('SemanticService: Model not found in any of the expected locations.');
+      return;
+    }
+
+    await _loadModel(foundPath);
+  }
+
+  Future<String?> _findModelPath() async {
     final docsDir = await getApplicationDocumentsDirectory();
-    final modelService = ModelService();
-    final downloadedPath = await modelService.getModelPath(ModelService.semanticSearchModelName);
+    final downloadedPath = await _modelService.getModelPath(ModelService.semanticSearchModelName);
     
-    // Try v11 first for compatibility (Windows/Older runtimes), then fallback
     final List<String> possiblePaths = [
       if (downloadedPath != null) downloadedPath,
       p.join(docsDir.path, 'semantic-search.onnx'),
-      'backend/models/semantic-search.onnx', // New S2 location
+      'backend/models/semantic-search.onnx',
       'backend/models/semantic/mobileclip2_s0_v11.onnx',
       'backend/models/semantic/mobileclip2_s0.onnx',
     ];
 
-    debugPrint('SemanticService: Looking for model in possible paths: $possiblePaths');
-    String? foundPath;
     for (var path in possiblePaths) {
-      if (await File(path).exists()) {
-        foundPath = path;
-        break;
-      }
+      if (await File(path).exists()) return path;
+    }
+    return null;
+  }
+
+  Future<void> _loadModel(String path) async {
+    final sessionOptions = OrtSessionOptions();
+    
+    // 1. Try file-based loading (Memory Efficient)
+    try {
+      _session = OrtSession.fromFile(File(path), sessionOptions);
+      debugPrint('SemanticService: Model loaded from file: $path');
+      return;
+    } catch (e) {
+      debugPrint('SemanticService: fromFile failed, trying fallback: $e');
     }
 
-    if (foundPath != null) {
-      try {
-        final sessionOptions = OrtSessionOptions();
-        final modelBytes = await File(foundPath).readAsBytes();
-        _session = OrtSession.fromBuffer(modelBytes, sessionOptions);
-        debugPrint('SemanticService: Model loaded from $foundPath');
-      } catch (e) {
-        debugPrint('SemanticService: Error loading model from $foundPath: $e');
-      }
-    } else {
-      debugPrint('SemanticService: Model not found in any of the expected locations.');
+    // 2. Fallback to buffer-based loading
+    try {
+      final bytes = await File(path).readAsBytes();
+      _session = OrtSession.fromBuffer(bytes, sessionOptions);
+      debugPrint('SemanticService: Model loaded from buffer: $path');
+    } catch (e) {
+      debugPrint('SemanticService: All loading attempts failed: $e');
     }
   }
 

@@ -213,16 +213,17 @@ class ThumbnailCache {
       
       // On Windows/Linux, if it's HEIC, we MUST try to convert it to JPEG.
       if (isHeic && (Platform.isWindows || Platform.isLinux)) {
-         // Silenced/Reduced logging to avoid spam during background sync
+         final targetJpg = File('${_convertedDir!.path}/$baseName.jpg');
+         
+         // Try 1: Pure Dart Isolate (image package - does not support HEIC, usually fails)
          final jpgBytes = await compute(_convertHeicToJpg, bytes);
          if (jpgBytes != null && jpgBytes.isNotEmpty) {
-            final targetFile = File('${_convertedDir!.path}/$baseName.jpg');
-            await targetFile.writeAsBytes(jpgBytes);
-            debugPrint("ThumbnailCache: Successfully converted remote HEIC to JPEG: $imageId");
-            return; // Done. We have the JPEG version which is valid for Windows.
-         } else {
-            // Intentionally silent on failure to avoid log spam, getRemoteOriginalFile handles the fallback
+            await targetJpg.writeAsBytes(jpgBytes);
+            debugPrint("ThumbnailCache: Pure-Dart converted remote HEIC to JPEG: $imageId");
+            return;
          }
+         // Pure-Dart failed. ThumbnailWidget will use JPEG thumbnail fallback (thumb1024/256/64).
+         // WPF/GDI+ were removed - they fail on standard Windows (HEIC requires HEIF codec).
       }
 
       final targetFile = File('${_convertedDir!.path}/$baseName$ext');
@@ -232,6 +233,21 @@ class ThumbnailCache {
       }
     } catch (e) {
       debugPrint("Error saving remote original to disk: $e");
+    }
+  }
+
+  /// Saves JPEG bytes as the remote original when HEIC conversion fails (e.g. on Windows).
+  /// Used as fallback so Journey cover photos display correctly.
+  Future<void> saveRemoteJpegFallback(String imageId, Uint8List jpegBytes) async {
+    if (kIsWeb) return;
+    if (!_isInitialized) await init();
+    try {
+      final baseName = 'remote_' + base64Url.encode(utf8.encode(imageId)).replaceAll('=', '');
+      final targetFile = File('${_convertedDir!.path}/$baseName.jpg');
+      await targetFile.writeAsBytes(jpegBytes);
+      debugPrint("ThumbnailCache: Saved JPEG fallback for Windows HEIC: $imageId");
+    } catch (e) {
+      debugPrint("ThumbnailCache: Error saving JPEG fallback: $e");
     }
   }
 
@@ -335,6 +351,31 @@ class ThumbnailCache {
     _currentMemorySizeBytes += bytes.lengthInBytes;
     
     _evictMemoryIfNeeded();
+  }
+
+  /// Removes a specific thumbnail from both memory and disk cache.
+  Future<void> invalidate(String id) async {
+    // 1. Remove from memory
+    if (_memoryCache.containsKey(id)) {
+      _currentMemorySizeBytes -= _memoryCache[id]!.lengthInBytes;
+      _memoryCache.remove(id);
+    }
+
+    // 2. Remove from disk
+    try {
+      final file = _getFile(id);
+      if (await file.exists()) {
+        await file.delete();
+      }
+      
+      final safeId = base64Url.encode(utf8.encode(id));
+      _diskCacheKeys.remove(safeId);
+      
+      // Note: We don't surgically remove from index.txt for performance.
+      // It will just be a MISS on next load, which is fine.
+    } catch (e) {
+      debugPrint("Error invalidating thumbnail on disk: $e");
+    }
   }
 
   bool hasInDisk(String id) {
