@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -524,4 +525,41 @@ func UpdateImageAlbum(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully assigned %d images to album %s", len(input.ImageIDs), input.AlbumName)})
+}
+
+// DownloadImage proxies a file download from MinIO to the client
+func DownloadImage(c *gin.Context) {
+	imageID := c.Param("id")
+	userID := c.Query("user_id")
+	variant := c.Query("variant")
+
+	if userID == "" || imageID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id and id are required"})
+		return
+	}
+
+	var objectName string
+	if variant == "original" {
+		objectName = fmt.Sprintf("%s/images/originals/%s.enc", userID, imageID)
+	} else if variant == "thumb_64" {
+		objectName = fmt.Sprintf("%s/images/thumbnails/%s_thumb_64.enc", userID, imageID)
+	} else {
+		// Default to 256
+		objectName = fmt.Sprintf("%s/images/thumbnails/%s_thumb_256.enc", userID, imageID)
+	}
+
+	object, err := services.DownloadFromMinio(objectName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found in storage"})
+		return
+	}
+	defer object.Close()
+
+	// Set content type for binary data
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s.enc", imageID))
+
+	if _, err := io.Copy(c.Writer, object); err != nil {
+		fmt.Printf("Error streaming from MinIO: %v\n", err)
+	}
 }

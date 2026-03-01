@@ -78,6 +78,7 @@ func main() {
 	r.GET("/images/faces/version", controllers.GetPeopleVersion)
 	r.POST("/images/faces/register", controllers.RegisterPeopleVersion)
 	r.GET("/sync", controllers.SyncImages)
+	r.GET("/images/download/:id", controllers.DownloadImage)
 
 	// Federated Learning Endpoints
 	services.InitFLService()

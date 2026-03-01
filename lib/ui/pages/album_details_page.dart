@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
+import '../../providers/photo_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:intl/intl.dart';
 import 'package:collection/collection.dart';
@@ -12,11 +13,15 @@ import '../widgets/thumbnail_widget.dart';
 import '../widgets/draggable_scroll_icon.dart';
 
 class AlbumDetailsPage extends StatefulWidget {
-  final AssetPathEntity album;
+  final AssetPathEntity? album;
+  final bool isFavorites;
+  final String? title;
 
   const AlbumDetailsPage({
     super.key,
-    required this.album,
+    this.album,
+    this.isFavorites = false,
+    this.title,
   });
 
   @override
@@ -43,15 +48,25 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
   }
 
   Future<void> _loadAlbumAssets() async {
-    // Progressive Loading:
-    // 1. Fetch first 500 items to show UI immediately
-    // 2. Fetch the rest in background
+    if (widget.isFavorites) {
+      final provider = Provider.of<PhotoProvider>(context, listen: false);
+      _updateGroups(provider.favoriteItems);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+      return;
+    }
 
-    final int totalCount = await widget.album.assetCountAsync;
+    if (widget.album == null) return;
+
+    // Progressive Loading:
+    final int totalCount = await widget.album!.assetCountAsync;
     final int firstBatch = 500;
     
     // Fetch initial batch
-    List<AssetEntity> initialAssets = await widget.album.getAssetListRange(start: 0, end: firstBatch);
+    List<AssetEntity> initialAssets = await widget.album!.getAssetListRange(start: 0, end: firstBatch);
     _updateGroups(_convertToGalleryItems(initialAssets));
     
     if (mounted) {
@@ -62,13 +77,10 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
 
     // Fetch remaining if any
     if (totalCount > firstBatch) {
-      // Small delay to allow initial frame to render smooth
       await Future.delayed(const Duration(milliseconds: 100));
       
-      final remainingAssets = await widget.album.getAssetListRange(start: firstBatch, end: totalCount);
+      final remainingAssets = await widget.album!.getAssetListRange(start: firstBatch, end: totalCount);
       if (mounted) {
-         // Combine and re-group. 
-         // Note: merging lists and regrouping 5k-10k items is fast (sync).
          final allAssets = [...initialAssets, ...remainingAssets];
          _updateGroups(_convertToGalleryItems(allAssets));
          setState(() {});
@@ -109,10 +121,11 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final String title = widget.title ?? widget.album?.name ?? 'Album';
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: Text(widget.album.name),
+        title: Text(title),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -160,22 +173,20 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
                           delegate: SliverChildBuilderDelegate(
                             (context, index) {
                               final GalleryItem item = group.items[index];
-                              // Local only for now in albums
-                              if (item.type == GalleryItemType.local) {
-                                return ThumbnailWidget(
-                                  entity: item.local!,
-                                  isFastScrolling: _isFastScrolling, 
-                                  heroTagPrefix: 'album_details_${widget.album.id}',
-                                  onTap: () {
-                                     final allItemsInAlbum = _groupedAssets.expand((g) => g.items).toList();
-                                     context.push('/viewer', extra: {
-                                        'item': item,
-                                        'items': allItemsInAlbum,
-                                     });
-                                  },
-                                );
-                              }
-                              return const SizedBox.shrink();
+                              final String heroPrefix = widget.isFavorites ? 'favs' : 'album_${widget.album?.id}';
+                              
+                              return ThumbnailWidget(
+                                item: item, // Note: ThumbnailWidget might need adjustment to take item or entity
+                                isFastScrolling: _isFastScrolling, 
+                                heroTagPrefix: 'album_details_$heroPrefix',
+                                onTap: () {
+                                   final allItemsInAlbum = _groupedAssets.expand((g) => g.items).toList();
+                                   context.push('/viewer', extra: {
+                                      'item': item,
+                                      'items': allItemsInAlbum,
+                                   });
+                                },
+                              );
                             },
                             childCount: group.items.length,
                           ),

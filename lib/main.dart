@@ -18,6 +18,7 @@ import 'ui/pages/settings_page.dart';
 import 'ui/pages/places_page.dart';
 import 'ui/pages/place_details_page.dart';
 import 'ui/pages/place_grid_page.dart';
+import 'ui/pages/image_edit_page.dart';
 import 'screens/auth_screen.dart';
 import 'models/gallery_item.dart';
 
@@ -132,10 +133,26 @@ final GoRouter _router = GoRouter(
 
 
     GoRoute(
+      path: '/edit',
+      builder: (context, state) {
+        final asset = state.extra as AssetEntity;
+        return ImageEditPage(asset: asset);
+      },
+    ),
+    GoRoute(
       path: '/album_details',
       builder: (context, state) {
-        final AssetPathEntity album = state.extra as AssetPathEntity;
-        return AlbumDetailsPage(album: album);
+        if (state.extra is AssetPathEntity) {
+          final AssetPathEntity album = state.extra as AssetPathEntity;
+          return AlbumDetailsPage(album: album);
+        } else if (state.extra is Map<String, dynamic>) {
+          final args = state.extra as Map<String, dynamic>;
+          return AlbumDetailsPage(
+            isFavorites: args['isFavorites'] ?? false,
+            title: args['title'],
+          );
+        }
+        return const Scaffold(body: Center(child: Text("Invalid Album Arguments")));
       },
     ),
     GoRoute(

@@ -5,6 +5,9 @@ backend/filedata.db
 backend/eval_data/
 backend/fl_updates/
 backend/fl_models/
+backend/chithram.db
+backend/models/semantic-search.onnx.data
+backend/models/semantic-search.onnx
 # Miscellaneous
 *.class
 *.log
@@ -69,3 +72,4 @@ app.*.map.json
 /ios/Flutter/Generated.xcconfig
 /ios/Flutter/flutter_export_environment.sh
 /ios/Flutter/ephemeral/
+

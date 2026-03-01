@@ -4,7 +4,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../providers/photo_provider.dart';
 import '../../services/travel_api_service.dart';
 import '../widgets/thumbnail_widget.dart';
-import '../widgets/remote_thumbnail_widget.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:intl/intl.dart';
@@ -330,9 +329,7 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
                             margin: const EdgeInsets.symmetric(horizontal: 8),
                             child: ClipRRect(
                                borderRadius: BorderRadius.circular(16),
-                               child: item.type == GalleryItemType.local 
-                                  ? ThumbnailWidget(entity: item.local!)
-                                  : RemoteThumbnailWidget(image: item.remote!),
+                               child: ThumbnailWidget(item: item),
                             ),
                          ),
                        );
@@ -539,23 +536,14 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
                             ),
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(isSelected ? 8 : 12),
-                              child: item.type == GalleryItemType.local 
-                                 ? ThumbnailWidget(
-                                     entity: item.local!,
-                                     onTap: () {
-                                        setState(() {
-                                          selectedPhoto = item;
-                                        });
-                                     },
-                                   )
-                                 : RemoteThumbnailWidget(
-                                     image: item.remote!,
-                                     onTap: () {
-                                        setState(() {
-                                          selectedPhoto = item;
-                                        });
-                                     },
-                                   ),
+                              child: ThumbnailWidget(
+                                 item: item,
+                                 onTap: () {
+                                    setState(() {
+                                      selectedPhoto = item;
+                                    });
+                                 },
+                              ),
                             ),
                           );
                         },
@@ -604,10 +592,6 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
   }
 
   Widget _buildCoverImage(GalleryItem item) {
-    if (item.type == GalleryItemType.local) {
-      return ThumbnailWidget(entity: item.local!, isHighRes: true);
-    } else {
-      return RemoteThumbnailWidget(image: item.remote!, isHighRes: true);
-    }
+    return ThumbnailWidget(item: item, isHighRes: true);
   }
 }

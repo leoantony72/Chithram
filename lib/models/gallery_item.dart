@@ -8,7 +8,9 @@ class GalleryItem {
   final AssetEntity? local;
   final RemoteImage? remote;
 
-  GalleryItem.local(this.local) : type = GalleryItemType.local, remote = null;
+  bool? _localFavoriteOverride;
+  
+  GalleryItem.local(this.local, {bool? isFavorite}) : type = GalleryItemType.local, remote = null, _localFavoriteOverride = isFavorite;
   GalleryItem.remote(this.remote) : type = GalleryItemType.remote, local = null;
 
   String get id => type == GalleryItemType.local ? local!.id : remote!.imageId;
@@ -18,6 +20,21 @@ class GalleryItem {
       return local!.createDateTime; 
     } else {
       return remote!.createdAt ?? DateTime.now();
+    }
+  }
+
+  bool get isFavorite {
+    if (type == GalleryItemType.local) {
+      return _localFavoriteOverride ?? local!.isFavorite;
+    }
+    return remote?.isFavorite ?? false;
+  }
+
+  set isFavorite(bool value) {
+    if (type == GalleryItemType.local) {
+      _localFavoriteOverride = value;
+    } else if (remote != null) {
+      remote!.isFavorite = value;
     }
   }
 

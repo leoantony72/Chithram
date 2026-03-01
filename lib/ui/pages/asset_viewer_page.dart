@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:extended_image/extended_image.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import '../../providers/photo_provider.dart';
@@ -122,6 +123,7 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
     }
     
     final currentItem = _items[_currentIndex];
+    final provider = Provider.of<PhotoProvider>(context);
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -143,6 +145,18 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
            ),
         ),
         actions: [
+          // Favorite Toggle
+          IconButton(
+            icon: Icon(
+              currentItem.isFavorite ? Icons.favorite : Icons.favorite_border,
+              color: currentItem.isFavorite ? Colors.redAccent : Colors.white,
+            ),
+            onPressed: () {
+              provider.toggleFavorite(currentItem);
+              // Force local UI refresh if needed, but PhotoProvider.notifyListeners should catch it
+              setState(() {}); 
+            },
+          ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert, color: Colors.white),
             onSelected: (value) {
@@ -241,11 +255,115 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
                     ),
                   ),
                 ),
+
+              // Modern Bottom Action Bar
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: _buildBottomActions(context, currentItem, provider),
+              ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildBottomActions(BuildContext context, GalleryItem item, PhotoProvider provider) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 24, left: 24, right: 24),
+      height: 64,
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.4),
+            blurRadius: 15,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _actionIcon(Icons.share_outlined, "Share", () => _onShare(item)),
+          _actionIcon(Icons.edit_outlined, "Edit", () => _onEdit(item)),
+          _actionIcon(Icons.library_add_outlined, "Album", () => _onAddToAlbum(context, item, provider)),
+          _actionIcon(Icons.delete_outline, "Delete", () => _onDelete(context, item, provider)),
+        ],
+      ),
+    );
+  }
+
+  Widget _actionIcon(IconData icon, String label, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(15),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.white, size: 22),
+            const SizedBox(height: 2),
+            Text(label, style: const TextStyle(color: Colors.white70, fontSize: 10)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onShare(GalleryItem item) async {
+    if (item.type == GalleryItemType.local) {
+      final file = await item.local!.file;
+      if (file != null) {
+        await Share.shareXFiles([XFile(file.path)], text: 'Check out this photo!');
+      }
+    } else {
+      // Remote - share URL
+      await Share.share(item.remote!.originalUrl, subject: 'Shared from Ninta');
+    }
+  }
+
+  void _onEdit(GalleryItem item) async {
+    if (item.type == GalleryItemType.local) {
+      final bool? edited = await context.push<bool>('/edit', extra: item.local);
+      if (edited == true) {
+        // Refresh the whole gallery because IDs or file paths have changed
+        PhotoProvider provider = Provider.of<PhotoProvider>(context, listen: false);
+        await provider.fetchAssets(force: true);
+        
+        if (context.mounted) {
+          // It's safest to pop back to the gallery since the current viewer 
+          // state (indices) might no longer match the updated asset list.
+          Navigator.pop(context); 
+        }
+      }
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Editing remote images is coming soon!")),
+      );
+    }
+  }
+
+  void _onAddToAlbum(BuildContext context, GalleryItem item, PhotoProvider provider) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (context) {
+        return _AlbumPickerSheet(item: item, provider: provider);
+      },
+    );
+  }
+
+  void _onDelete(BuildContext context, GalleryItem item, PhotoProvider provider) async {
+    await provider.deleteSelectedPhotos(context, [item]);
+    // If the list is now empty or the index changed, the provider logic handles it.
+    // If the index was the last one, we might need to go back.
+    if (_items.isEmpty) {
+      if (mounted) context.pop();
+    }
   }
   
   Widget _buildItem(GalleryItem item, int index) {
@@ -580,6 +698,92 @@ class _DetailsSheetState extends State<_DetailsSheet> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AlbumPickerSheet extends StatelessWidget {
+  final GalleryItem item;
+  final PhotoProvider provider;
+  const _AlbumPickerSheet({required this.item, required this.provider});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<PhotoProvider>(
+      builder: (context, provider, child) {
+        final localAlbums = provider.paths;
+        final remoteAlbums = provider.remoteAlbums;
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Add to Album",
+                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    if (localAlbums.isNotEmpty) ...[
+                      const Text("Local Albums",
+                          style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      ...localAlbums.map((album) => ListTile(
+                            leading: const Icon(Icons.folder_outlined, color: Colors.blueAccent),
+                            title: Text(album.name, style: const TextStyle(color: Colors.white)),
+                            onTap: () async {
+                              final error = await provider.addSelectedToAlbum([item], album, null);
+                              if (context.mounted) {
+                                Navigator.pop(context);
+                                if (error != null) {
+                                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Added to local album")));
+                                }
+                              }
+                            },
+                          )),
+                      const SizedBox(height: 16),
+                    ],
+                    if (remoteAlbums.isNotEmpty) ...[
+                      const Text("Cloud Albums",
+                          style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      ...remoteAlbums.map((album) {
+                        final String name = album['name'] ?? 'Unnamed';
+                        return ListTile(
+                          leading: const Icon(Icons.cloud_outlined, color: Colors.greenAccent),
+                          title: Text(name, style: const TextStyle(color: Colors.white)),
+                          onTap: () async {
+                            final error = await provider.addSelectedToAlbum([item], null, name);
+                            if (context.mounted) {
+                              Navigator.pop(context);
+                              if (error != null) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Added to cloud album")));
+                              }
+                            }
+                          },
+                        );
+                      }),
+                    ],
+                    if (localAlbums.isEmpty && remoteAlbums.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 20),
+                        child: Center(child: Text("No albums found", style: TextStyle(color: Colors.white54))),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+          ),
+        );
+      },
     );
   }
 }

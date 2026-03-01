@@ -9,6 +9,7 @@ import '../../services/backup_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/crypto_service.dart';
 import 'package:sodium_libs/sodium_libs_sumo.dart';
+import '../../models/gallery_item.dart';
 
 class AlbumModel {
   final String id;
@@ -16,6 +17,7 @@ class AlbumModel {
   final AssetPathEntity? localPath;
   final String? remoteCoverUrl;
   final bool isCloud;
+  final int itemCount;
 
   AlbumModel({
     required this.id,
@@ -23,6 +25,7 @@ class AlbumModel {
     this.localPath,
     this.remoteCoverUrl,
     this.isCloud = false,
+    this.itemCount = 0,
   });
 }
 
@@ -56,32 +59,50 @@ class AlbumsPage extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           
-          // Unified list building
-          final List<AlbumModel> allAlbums = [];
+          // 1. Prepare Albums list
+          final List<AlbumModel> otherAlbums = [];
           
-          // Add local albums
-          for (var path in provider.paths) {
+          // 2. Add local albums
+          for (final path in provider.paths) {
             final isUploaded = provider.remoteAlbums.any((ra) => ra['name'] == path.name);
-            allAlbums.add(AlbumModel(
+            final cachedCount = AlbumMetadataCache.counts[path.id] ?? 0;
+            otherAlbums.add(AlbumModel(
               id: path.id,
               name: path.name,
               localPath: path,
               isCloud: isUploaded,
+              itemCount: cachedCount,
             ));
           }
           
-          // Add purely remote albums
+          // 3. Add purely remote albums
           for (var ra in provider.remoteAlbums) {
             final name = ra['name'] ?? 'Unknown';
-            if (!allAlbums.any((a) => a.name == name)) {
-               allAlbums.add(AlbumModel(
+            if (!otherAlbums.any((a) => a.name == name)) {
+               otherAlbums.add(AlbumModel(
                  id: 'remote_$name',
                  name: name,
                  remoteCoverUrl: ra['cover_image_url'],
                  isCloud: true,
+                 itemCount: ra['image_count'] ?? 0,
                ));
             }
           }
+
+          // 4. Sort other albums by itemCount DESC
+          otherAlbums.sort((a, b) => b.itemCount.compareTo(a.itemCount));
+
+          // 5. Build final list with Favorites first
+          final List<AlbumModel> allAlbums = [];
+          
+          allAlbums.add(AlbumModel(
+            id: 'favorites_virtual',
+            name: 'Favorites',
+            isCloud: false,
+            itemCount: provider.favoriteItems.length,
+          ));
+          
+          allAlbums.addAll(otherAlbums);
 
           return CustomScrollView(
             physics: const BouncingScrollPhysics(),
@@ -234,18 +255,33 @@ class _AlbumCardState extends State<AlbumCard> {
     }
 
     // 2. Fetch fresh data if needed
-    // If we missed cache, or just want to ensure consistency, we fetch.
-    // If we hit cache, we only fetch if we suspect changes (optional), but for now 
-    // to strictly fix the flicker, we only fetch if missing.
     if (_coverAsset == null || _count == 0) {
-      _fetchData();
+      if (albumId == 'favorites_virtual') {
+         _fetchFavoritesData();
+      } else {
+         _fetchData();
+      }
+    }
+  }
+
+  void _fetchFavoritesData() {
+    final provider = Provider.of<PhotoProvider>(context, listen: false);
+    final favs = provider.favoriteItems;
+    if (mounted) {
+      setState(() {
+        _count = favs.length;
+        if (favs.isNotEmpty && favs.first.type == GalleryItemType.local) {
+           _coverAsset = favs.first.local;
+           if (_coverAsset != null) _loadThumbnail(_coverAsset!);
+        }
+      });
     }
   }
 
   Future<void> _fetchData() async {
     final String albumId = widget.album.id;
     if (widget.album.localPath == null) {
-       // Cloud only album
+       // Cloud only album (and not favorites which we handled above)
        if (widget.album.remoteCoverUrl != null) {
           _fetchRemoteThumbnail();
        }
@@ -256,7 +292,7 @@ class _AlbumCardState extends State<AlbumCard> {
     final countFuture = widget.album.localPath!.assetCountAsync;
     final listFuture = widget.album.localPath!.getAssetListRange(start: 0, end: 1);
 
-    final results = await Future.wait([countFuture, listFuture]);
+    final results = await Future.wait<dynamic>([countFuture, listFuture]);
     final int newCount = results[0] as int;
     final List<AssetEntity> assets = results[1] as List<AssetEntity>;
 
@@ -323,7 +359,9 @@ class _AlbumCardState extends State<AlbumCard> {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: () {
-        if (widget.album.localPath != null) {
+        if (widget.album.id == 'favorites_virtual') {
+          context.push('/album_details', extra: {'isFavorites': true, 'title': 'Favorites'});
+        } else if (widget.album.localPath != null) {
           context.push('/album_details', extra: widget.album.localPath);
         } else {
           context.push('/albums/${Uri.encodeComponent(widget.album.name)}');
@@ -334,53 +372,70 @@ class _AlbumCardState extends State<AlbumCard> {
           color: Colors.grey[900],
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
-             BoxShadow(
-               color: Colors.black.withOpacity(0.3),
-               blurRadius: 8,
-               offset: const Offset(0, 4),
-             )
+            BoxShadow(
+              color: Colors.black.withOpacity(0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            )
           ],
         ),
         clipBehavior: Clip.antiAlias,
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Image
+            // Image or Placeholder
             if (_thumbBytes != null)
               Image.memory(
-                 _thumbBytes!, 
-                 fit: BoxFit.cover, 
-                 gaplessPlayback: true,
-                 errorBuilder: (context, error, stackTrace) => Container(
-                    color: Colors.grey[800],
-                    child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24))
-                 ),
+                _thumbBytes!,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                errorBuilder: (context, error, stackTrace) => Container(
+                  color: Colors.grey[800],
+                  child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24)),
+                ),
               )
             else
               Container(
                 color: Colors.grey[800],
                 child: Center(
-                  child: widget.album.localPath == null
-                      ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.folder, color: Colors.white24, size: 48),
+                  child: widget.album.id == 'favorites_virtual'
+                      ? const Icon(Icons.favorite, color: Colors.white24, size: 48)
+                      : widget.album.localPath == null
+                          ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.folder, color: Colors.white24, size: 48),
                 ),
               ),
-            
+
             // Cloud Icon Indicator
-            if (widget.album.isCloud)
+            if (widget.album.isCloud && widget.album.id != 'favorites_virtual')
               Positioned(
                 top: 8,
                 right: 8,
                 child: Container(
                   padding: const EdgeInsets.all(4),
                   decoration: BoxDecoration(
-                    color: Colors.black45,
+                    color: Colors.black.withOpacity(0.5),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: const Icon(Icons.cloud_done, color: Colors.white, size: 14),
                 ),
               ),
             
+            // Favorite Icon for the virtual album
+            if (widget.album.id == 'favorites_virtual')
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.5),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.favorite, color: Colors.redAccent, size: 14),
+                ),
+              ),
+
             // Gradient Overlay
             Positioned(
               left: 0,
@@ -400,8 +455,8 @@ class _AlbumCardState extends State<AlbumCard> {
                 ),
               ),
             ),
-            
-            // Text
+
+            // Text Metadata
             Positioned(
               left: 12,
               right: 12,
@@ -438,4 +493,3 @@ class _AlbumCardState extends State<AlbumCard> {
     );
   }
 }
-

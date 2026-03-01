@@ -13,12 +13,19 @@ class ModelService {
 
   static const String faceDetectionModelName = 'face-detection';
   static const String faceRecognitionModelName = 'face-recognition';
+  static const String semanticSearchModelName = 'semantic-search';
 
   Future<bool> ensureModelsDownloaded() async {
     if (kIsWeb) return true; // Web doesn't need downloaded models
-    final success1 = await _downloadModel(faceDetectionModelName);
-    final success2 = await _downloadModel(faceRecognitionModelName);
-    return success1 && success2;
+    
+    // Run all checks in parallel to avoid sequential timeouts
+    final results = await Future.wait([
+      _downloadModel(faceDetectionModelName),
+      _downloadModel(faceRecognitionModelName),
+      _downloadModel(semanticSearchModelName),
+    ]);
+    
+    return results.every((success) => success);
   }
 
   Future<bool> _downloadModel(String modelName) async {
@@ -31,39 +38,64 @@ class ModelService {
     final currentLocalVersion = prefs.getString(localVersionKey);
 
     String? remoteVersion;
-    final response = await http.get(Uri.parse('$_baseUrl/models/$modelName/info'))
-        .timeout(const Duration(seconds: 10));
-    
-    if (response.statusCode == 200) {
-      final info = jsonDecode(response.body);
-      remoteVersion = info['version'] as String;
+    try {
+      final response = await http.get(Uri.parse('$_baseUrl/models/$modelName/info'))
+          .timeout(const Duration(seconds: 5)); // Reduced to 5s for fast JSON info check (v2)
       
-      if (await file.exists() && currentLocalVersion == remoteVersion) {
-        print('Model $modelName is up to date (Version: $remoteVersion).');
+      if (response.statusCode == 200) {
+        final info = jsonDecode(response.body);
+        remoteVersion = info['version'] as String;
+        
+        if (await file.exists() && currentLocalVersion == remoteVersion) {
+          debugPrint('Model $modelName is up to date (Version: $remoteVersion).');
+          return true;
+        }
+        debugPrint('Model $modelName update available (Local: $currentLocalVersion, Remote: $remoteVersion). Updating...');
+      } else {
+         if (await file.exists()) {
+           debugPrint('Model $modelName: Server returned ${response.statusCode}. Using local fallback.');
+           return true; 
+         }
+      }
+    } catch (e) {
+      debugPrint('Model $modelName (v2): info check failed or timed out: $e');
+      if (await file.exists()) {
+        debugPrint('Model $modelName: Using existing local model as fallback.');
         return true;
       }
-      print('Model $modelName update available (Local: $currentLocalVersion, Remote: $remoteVersion). Updating...');
-    } else {
-       if (await file.exists()) return true; // Fallback to local if server is down
     }
 
     print('Downloading model $modelName...');
+    final client = http.Client();
     try {
-      final downloadResponse = await http.get(Uri.parse('$_baseUrl/models/$modelName/download'))
-          .timeout(const Duration(seconds: 30));
+      final request = http.Request('GET', Uri.parse('$_baseUrl/models/$modelName/download'));
+      final streamedResponse = await client.send(request).timeout(const Duration(seconds: 300));
 
-      if (downloadResponse.statusCode == 200) {
-        await file.writeAsBytes(downloadResponse.bodyBytes);
+      if (streamedResponse.statusCode == 200) {
+        // Use a temporary file for atomic write
+        final tempFile = File('${file.path}.tmp');
+        if (await tempFile.exists()) await tempFile.delete();
+        
+        final sink = tempFile.openWrite();
+        await streamedResponse.stream.pipe(sink);
+        await sink.close();
+        
+        // Atomic rename
+        if (await file.exists()) await file.delete();
+        await tempFile.rename(file.path);
+
         if (remoteVersion != null) {
           await prefs.setString(localVersionKey, remoteVersion);
         }
         print('Model $modelName updated successfully to Version: $remoteVersion');
         return true;
       } else {
-        print('Failed to download model $modelName: ${downloadResponse.statusCode}');
+        print('Failed to download model $modelName: ${streamedResponse.statusCode}');
       }
     } catch (e) {
       print('Error downloading model $modelName: $e');
+    } finally {
+      client.close();
     }
     return false;
   }

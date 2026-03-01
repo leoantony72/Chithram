@@ -16,7 +16,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import '../../models/gallery_item.dart';
 import '../../models/remote_image.dart';
-import '../widgets/remote_thumbnail_widget.dart';
+import '../../models/remote_image.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
@@ -451,24 +451,10 @@ class _MapPageState extends State<MapPage> {
                         delegate: SliverChildBuilderDelegate(
                           (context, index) {
                             final item = _visibleItems[index];
-                            if (item.type == GalleryItemType.local) {
-                               return InkWell(
-                                onTap: () => context.push('/viewer', extra: item),
-                                child: Hero(
-                                  tag: 'map_grid_${item.id}',
-                                  child: Image(
-                                    image: AssetEntityImageProvider(
-                                      item.local!,
-                                      isOriginal: false,
-                                      thumbnailSize: const ThumbnailSize.square(200),
-                                    ),
-                                    fit: BoxFit.cover,
-                                  ),
-                                ),
-                              );
-                            } else {
-                               return RemoteThumbnailWidget(image: item.remote!);
-                            }
+                            return ThumbnailWidget(
+                               item: item,
+                               heroTagPrefix: 'map_grid_${item.id}',
+                            );
                           },
                           childCount: _visibleItems.length,
                         ),

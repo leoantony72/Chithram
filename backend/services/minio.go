@@ -120,3 +120,9 @@ func DeleteObject(objectName string) error {
 	}
 	return MinioClient.RemoveObject(ctx, BucketName, objectName, opts)
 }
+
+// DownloadFromMinio returns an object from MinIO as a reader
+func DownloadFromMinio(objectName string) (*minio.Object, error) {
+	ctx := context.Background()
+	return MinioClient.GetObject(ctx, BucketName, objectName, minio.GetObjectOptions{})
+}

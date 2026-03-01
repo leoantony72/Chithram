@@ -7,7 +7,7 @@ import '../../services/backup_service.dart';
 import '../../services/auth_service.dart';
 import '../../models/remote_image.dart';
 import '../../models/gallery_item.dart';
-import '../widgets/remote_thumbnail_widget.dart';
+import '../widgets/thumbnail_widget.dart';
 
 class CloudAlbumDetailsPage extends StatefulWidget {
   final String albumName;
@@ -148,11 +148,12 @@ class _CloudAlbumDetailsPageState extends State<CloudAlbumDetailsPage> {
                     if (index == _images.length) {
                       return const Center(child: CircularProgressIndicator(color: Colors.white70));
                     }
-                    return RemoteThumbnailWidget(
-                      image: _images[index],
+                    final item = GalleryItem.remote(_images[index]);
+                    return ThumbnailWidget(
+                      item: item,
                       onTap: () {
                          context.push('/viewer', extra: {
-                            'item': GalleryItem.remote(_images[index]),
+                            'item': item,
                             'items': _images.map((e) => GalleryItem.remote(e)).toList(),
                          });
                       },

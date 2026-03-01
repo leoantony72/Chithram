@@ -2,10 +2,14 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:provider/provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../../services/backup_service.dart';
 import '../../services/federated_learning_service.dart';
 import '../../services/api_config.dart';
+import '../../providers/photo_provider.dart';
+import '../../models/gallery_item.dart';
+import '../../services/database_service.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -70,6 +74,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 sliver: SliverList(
                   delegate: SliverChildListDelegate([
                     _buildNetworkSection(),
+                    const SizedBox(height: 24),
+                    _buildSemanticSection(),
                     const SizedBox(height: 24),
                     if (!kIsWeb && !Platform.isWindows) _buildBackupSection(),
                     if (!kIsWeb && !Platform.isWindows) const SizedBox(height: 24),
@@ -166,6 +172,168 @@ class _SettingsPageState extends State<SettingsPage> {
                 },
               );
             },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSemanticSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader('Semantic Search', Icons.manage_search_rounded),
+        _buildGlassCard(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Consumer<PhotoProvider>(
+              builder: (context, provider, child) {
+                final int totalItems = provider.allItems.where((i) => i.type == GalleryItemType.local || i.type == GalleryItemType.remote).length;
+                final int indexedCount = provider.semanticIndexedCount;
+                final bool isIndexing = provider.isSemanticIndexing;
+                final double progress = provider.semanticProgress;
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(color: Colors.purpleAccent.withOpacity(0.2), shape: BoxShape.circle),
+                          child: const Icon(Icons.smart_toy_rounded, color: Colors.purpleAccent, size: 24),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('AI Indexing Progress', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                              const SizedBox(height: 4),
+                              Text(
+                                isIndexing 
+                                  ? 'Processing your library for smart semantic search...' 
+                                  : 'Indexing paused or fully complete.',
+                                style: const TextStyle(color: Colors.white54, fontSize: 13, height: 1.3),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          isIndexing ? '${(progress * 100).toStringAsFixed(1)}%' : 'Indexed',
+                          style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          '$indexedCount / $totalItems photos',
+                          style: const TextStyle(color: Colors.white54, fontSize: 14, fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // Custom Modern Progress Bar
+                    Container(
+                      height: 8,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: FractionallySizedBox(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: totalItems > 0 
+                            ? (isIndexing ? progress : (indexedCount / totalItems).clamp(0.0, 1.0))
+                            : 0.0,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [Colors.blueAccent, Colors.purpleAccent],
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.purpleAccent.withOpacity(0.4),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              )
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    if (!isIndexing && indexedCount < totalItems)
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white.withOpacity(0.1),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () {
+                           provider.startSemanticIndexing();
+                        },
+                        icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                        label: const Text('Resume Indexing'),
+                      ),
+                    const SizedBox(height: 12),
+                    // Clear & Re-index — wipes corrupted embeddings and forces fresh indexing
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                        side: const BorderSide(color: Colors.redAccent, width: 1),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      onPressed: isIndexing ? null : () async {
+                        // Confirm before wiping
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            backgroundColor: const Color(0xFF1C1C1E),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                            title: const Text('Clear AI Index?', style: TextStyle(color: Colors.white)),
+                            content: const Text(
+                              'This will delete all saved semantic embeddings and re-index your entire library from scratch. This cannot be undone.',
+                              style: TextStyle(color: Colors.white54, height: 1.5),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('Clear & Re-index', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirm != true) return;
+                        await DatabaseService().clearSemanticEmbeddings();
+                        if (context.mounted) {
+                          await provider.initSemanticStats();
+                          provider.startSemanticIndexing();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('AI index cleared. Re-indexing started...')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: const Text('Clear & Re-index'),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ],

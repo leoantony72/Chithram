@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import 'package:go_router/go_router.dart';
 import '../../providers/photo_provider.dart';
 import '../widgets/thumbnail_widget.dart';
-import '../widgets/remote_thumbnail_widget.dart';
 import '../../models/gallery_item.dart';
 
 class PlacesPage extends StatefulWidget {
@@ -315,10 +314,6 @@ class _PlacesPageState extends State<PlacesPage> {
   }
 
   Widget _buildCoverImage(GalleryItem item) {
-    if (item.type == GalleryItemType.local) {
-      return ThumbnailWidget(entity: item.local!, isHighRes: true);
-    } else {
-      return RemoteThumbnailWidget(image: item.remote!, isHighRes: true);
-    }
+    return ThumbnailWidget(item: item, isHighRes: true);
   }
 }

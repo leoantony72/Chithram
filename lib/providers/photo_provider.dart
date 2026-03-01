@@ -8,16 +8,23 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
+import 'dart:math' as math;
+import 'package:sodium_libs/sodium_libs_sumo.dart';
 import '../models/photo_group.dart';
 import '../services/backup_service.dart';
 import '../services/auth_service.dart';
 import '../services/database_service.dart';
 import '../services/places_service.dart';
 import '../services/thumbnail_cache.dart';
+import '../services/api_config.dart';
+import '../services/crypto_service.dart';
+import '../services/model_service.dart';
 import 'package:exif/exif.dart';
+import 'package:system_info2/system_info2.dart';
 
 import '../models/gallery_item.dart';
 import '../models/remote_image.dart';
+import '../services/semantic/semantic_service.dart';
 
 class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> _paths = [];
@@ -43,6 +50,10 @@ class PhotoProvider with ChangeNotifier {
   bool _isJourneyProcessing = false;
   double _journeyProgress = 0.0;
   
+  bool _isSemanticIndexing = false;
+  double _semanticProgress = 0.0;
+  int _semanticIndexedCount = 0;
+  
   // Offline Hydration State
   bool _isOfflineHydrated = false;
   
@@ -58,6 +69,7 @@ class PhotoProvider with ChangeNotifier {
   List<PhotoGroup> get groupedByDay => _groupedByDay;
   List<PhotoGroup> get groupedByMonth => _groupedByMonth;
   List<PhotoGroup> get groupedByYear => _groupedByYear;
+  List<GalleryItem> get favoriteItems => _allItems.where((e) => e.isFavorite).toList();
 
   Map<String, latlong.LatLng> get locationCache => _locationCache;
   bool get isLocationScanning => _isLocationScanning;
@@ -67,6 +79,10 @@ class PhotoProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   bool get isJourneyProcessing => _isJourneyProcessing;
   double get journeyProgress => _journeyProgress;
+  
+  bool get isSemanticIndexing => _isSemanticIndexing;
+  double get semanticProgress => _semanticProgress;
+  int get semanticIndexedCount => _semanticIndexedCount;
   
   // Calculate total cloud bytes
   int get totalCloudStorageBytes {
@@ -113,8 +129,11 @@ class PhotoProvider with ChangeNotifier {
       debugPrint("PhotoProvider: Received ${_remoteAlbums.length} remote albums.");
 
       // Re-group with new data
-      _groupAssets();
+      await _groupAssets();
+      await initSemanticStats();
       notifyListeners();
+      // Now that _allItems is populated, kick off indexing if not already running
+      startSemanticIndexing();
     } else {
       debugPrint("PhotoProvider: Cannot fetch remote photos - No session found.");
     }
@@ -133,6 +152,7 @@ class PhotoProvider with ChangeNotifier {
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
          _hasPermission = await PhotoManager.requestPermissionExtend().then((ps) => ps.isAuth);
          await fetchAssets();
+         await initSemanticStats();
       } else if (!kIsWeb && Platform.isWindows) {
          _hasPermission = true;
          await fetchAssets();
@@ -182,6 +202,7 @@ class PhotoProvider with ChangeNotifier {
     if (Platform.isWindows) {
       _hasPermission = true;
       await fetchAssets();
+      await initSemanticStats();
       notifyListeners();
       return;
     }
@@ -198,22 +219,26 @@ class PhotoProvider with ChangeNotifier {
     }
     
     await fetchAssets();
+    await initSemanticStats();
     notifyListeners();
   }
   
-  Future<void> fetchAssets() async {
+  Future<void> fetchAssets({bool force = false}) async {
     _isLoading = true;
-    _allAssets = [];
-    _isOfflineHydrated = false;
+    if (force) {
+      _allAssets = [];
+      _allItems = [];
+      _isOfflineHydrated = false;
+    }
     notifyListeners();
 
     try {
-      bool isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
+      bool isDesktopOrMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS || Platform.isWindows);
       
-      if (isMobile && _hasPermission) {
-         // Phase 1: INSTANT SQLite HYDRATION - Load ALL items instantly
+      if (isDesktopOrMobile && _hasPermission) {
+         // Phase 1: SQLite HYDRATION
          final cachedIndex = await DatabaseService().getGalleryIndex(limit: 1000000, offset: 0);
-         if (cachedIndex.isNotEmpty) {
+         if (cachedIndex.isNotEmpty && !force) {
             
             // Offload heavy parsing & grouping to background isolate
             final parsedGroups = await compute(_parseAndGroupAssets, {
@@ -243,11 +268,10 @@ class PhotoProvider with ChangeNotifier {
          }
          
          // Phase 2: SILENT BACKGROUND OS SYNC
-         _syncWithOS();
+         _syncWithOS(force: force);
       } 
       
-      await fetchRemotePhotos(); 
-
+      await fetchRemotePhotos();
     } catch (e) {
       debugPrint("Error fetching assets: $e");
     } finally {
@@ -258,7 +282,7 @@ class PhotoProvider with ChangeNotifier {
     }
   }
 
-  Future<void> _syncWithOS() async {
+  Future<void> _syncWithOS({bool force = false}) async {
     try {
         final FilterOptionGroup option = FilterOptionGroup(
           imageOption: const FilterOption(
@@ -269,9 +293,11 @@ class PhotoProvider with ChangeNotifier {
         );
 
         _paths = await PhotoManager.getAssetPathList(type: RequestType.common, filterOption: option);
+        notifyListeners();
 
         if (_paths.isNotEmpty) {
           final totalCount = await _paths.first.assetCountAsync;
+          List<AssetEntity> backgroundLoadedEntities = [];
           
           if (totalCount > 0) {
              // If we didn't have a cache (first launch ever or cleared data)
@@ -279,19 +305,29 @@ class PhotoProvider with ChangeNotifier {
                 // Fetch first 500 immediately to unblock the user's splash screen
                 final int initialFetch = totalCount < 500 ? totalCount : 500;
                 _allAssets = await _paths.first.getAssetListRange(start: 0, end: initialFetch);
-                _groupAssets();
+                await _groupAssets();
                 notifyListeners(); 
              }
 
              // Background: Cache ALL native OS items in SQLite so next launch is instant (limit memory during processing chunking)
              final sqliteCount = await DatabaseService().getGalleryIndexCount();
-             if (totalCount != sqliteCount) {
+             
+             // Check if the most recent asset ID has changed (heuristic for sync needed)
+             String? latestIdInDb;
+             if (sqliteCount > 0) {
+               final firstItem = await DatabaseService().getGalleryIndex(limit: 1, offset: 0);
+               if (firstItem.isNotEmpty) latestIdInDb = firstItem.first['id'];
+             }
+             final latestAssetId = (await _paths.first.getAssetListRange(start: 0, end: 1)).firstOrNull?.id;
+
+             if (totalCount != sqliteCount || force || latestIdInDb != latestAssetId) {
+                 // Fetch existing favorites to preserve them during re-index
+                 final existingFavs = await DatabaseService().getFavoritesIds();
                  await DatabaseService().clearGalleryIndex();
-                 
+
                  // Chunk size prevents the Platform Channel from stuttering the main UI thread during sync
                  const int chunkSize = 1000;
                  int processed = 0;
-                 List<AssetEntity> backgroundLoadedEntities = [];
                  
                  while (processed < totalCount) {
                     final int fetchC = (processed + chunkSize < totalCount) ? chunkSize : (totalCount - processed);
@@ -299,7 +335,7 @@ class PhotoProvider with ChangeNotifier {
                     if (!_isOfflineHydrated) {
                         backgroundLoadedEntities.addAll(entities);
                     }
-                    
+
                     final List<Map<String, dynamic>> cacheObjects = entities.map((e) => {
                         'id': e.id,
                         'title': e.title ?? '',
@@ -308,29 +344,35 @@ class PhotoProvider with ChangeNotifier {
                         'height': e.height,
                         'create_dt': e.createDateSecond,
                         'modify_dt': e.modifiedDateSecond,
-                        'relative_path': e.relativePath,
+                        'relative_path': '',
+                        'is_favorite': existingFavs.contains(e.id) ? 1 : (e.isFavorite ? 1 : 0)
                     }).toList();
-                    
+
                     await DatabaseService().saveGalleryIndex(cacheObjects);
                     processed += fetchC;
-                    
+
                     // Yield to the event queue longer to let scroll frames render
                     await Future.delayed(const Duration(milliseconds: 30));
                  }
                  
+                 // Re-group because the background sync might have added items
+                 await _groupAssets();
+                 notifyListeners();
+             }
+    
                  // If the UI was completely unhydrated on this run (First Launch), instantly hot-swap the UI to the full array to expand the scrollbar
                  if (!_isOfflineHydrated) {
                     _allAssets = backgroundLoadedEntities;
                     _isOfflineHydrated = true;
-                    _groupAssets();
+                    await _groupAssets();
                     notifyListeners();
                     await startLocationScan();
+                    startSemanticIndexing();
                  }
                  
                  debugPrint("PhotoProvider: Fully cached $totalCount native OS images into SQLite offline index.");
              }
           }
-        }
     } catch (e) {
        debugPrint("Background OS Sync Error: $e");
     }
@@ -368,7 +410,11 @@ class PhotoProvider with ChangeNotifier {
       }).toList();
 
       final allItems = [
-        ...allAssets.map((e) => GalleryItem.local(e)),
+        ...allAssets.asMap().entries.map((entry) {
+           final row = cachedIndex[entry.key];
+           final isFav = (row['is_favorite'] ?? 0) == 1;
+           return GalleryItem.local(entry.value, isFavorite: isFav);
+        }),
         ...uniqueRemote.map((e) => GalleryItem.remote(e))
       ];
       
@@ -405,7 +451,7 @@ class PhotoProvider with ChangeNotifier {
   }
 
   // Update _groupAssets to merge and group
-  void _groupAssets() {
+  Future<void> _groupAssets() async {
     // Deduplication: Only show remote images that are NOT present locally
     final Set<String> localIds = _allAssets.map((e) => e.id).toSet();
     
@@ -417,9 +463,12 @@ class PhotoProvider with ChangeNotifier {
        return true;
     }).toList();
 
+    // Fetch favorites to overlay them onto the local assets
+    final favIds = await DatabaseService().getFavoritesIds();
+
     // 1. Combine
     _allItems = [
-      ..._allAssets.map((e) => GalleryItem.local(e)),
+      ..._allAssets.map((e) => GalleryItem.local(e, isFavorite: favIds.contains(e.id))),
       ...uniqueRemote.map((e) => GalleryItem.remote(e))
     ];
     
@@ -1100,9 +1149,9 @@ class PhotoProvider with ChangeNotifier {
             }
          }
          
-         // Regroup UI
-         _groupAssets();
-         return null; // Success
+          // Regroup UI
+          await _groupAssets();
+          return null; // Success
      } catch (e) {
          print("Error adding to album: $e");
          final errStr = e.toString();
@@ -1114,5 +1163,383 @@ class PhotoProvider with ChangeNotifier {
          _isLoading = false;
          notifyListeners();
      }
+  }
+
+  /// Toggles the favorite status of a photo (Local or Remote)
+  Future<void> toggleFavorite(GalleryItem item) async {
+    try {
+      if (item.type == GalleryItemType.local) {
+        final asset = item.local!;
+        final bool newState = !asset.isFavorite;
+        
+        bool success = false;
+        if (Platform.isIOS || Platform.isMacOS) {
+          try {
+            await PhotoManager.editor.darwin.favoriteAsset(
+              favorite: newState,
+              entity: asset,
+            );
+          } catch (e) {
+             debugPrint("Native favorite failed: $e");
+          }
+        } 
+        
+        // Secondary persistence to our SQLite index for all platforms (Windows/Android fallback)
+        await DatabaseService().updateFavoriteStatus(asset.id, newState);
+        item.isFavorite = newState; // Update in-memory override
+        success = true;
+        
+        if (success) {
+           notifyListeners();
+        }
+      } else {
+        // Remote
+        final remote = item.remote!;
+        final bool newState = !remote.isFavorite;
+        
+        // Update in-memory state
+        for (int i = 0; i < _remoteImages.length; i++) {
+          if (_remoteImages[i].imageId == remote.imageId) {
+            final old = _remoteImages[i];
+            _remoteImages[i] = RemoteImage(
+              imageId: old.imageId,
+              userId: old.userId,
+              album: old.album,
+              width: old.width,
+              height: old.height,
+              size: old.size,
+              latitude: old.latitude,
+              longitude: old.longitude,
+              originalUrl: old.originalUrl,
+              thumb256Url: old.thumb256Url,
+              thumb64Url: old.thumb64Url,
+              sourceId: old.sourceId,
+              createdAt: old.createdAt,
+              isDeleted: old.isDeleted,
+              isFavorite: newState,
+            );
+            break;
+          }
+        }
+        await _groupAssets();
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint("Error toggling favorite: $e");
+    }
+  }
+  // --- Semantic Indexing & Search ---
+
+  final SemanticService _semanticService = SemanticService();
+
+  Future<void> initSemanticStats() async {
+    if (_allItems.isEmpty) return;
+    
+    final indexedCount = await DatabaseService().getSemanticIndexedCount();
+    final indexableItems = _allItems.where((item) => 
+        item.type == GalleryItemType.local || item.type == GalleryItemType.remote
+    ).length;
+    
+    _semanticIndexedCount = indexedCount;
+    if (indexableItems > 0) {
+      _semanticProgress = (indexedCount / indexableItems).clamp(0.0, 1.0);
+    }
+    notifyListeners();
+  }
+
+  Future<void> startSemanticIndexing() async {
+    debugPrint("PhotoProvider: startSemanticIndexing called. _isSemanticIndexing: $_isSemanticIndexing, _allItems length: ${_allItems.length}");
+    if (_isSemanticIndexing || _allItems.isEmpty) {
+      debugPrint("PhotoProvider: startSemanticIndexing aborted (already indexing or empty list)");
+      return;
+    }
+    
+    _isSemanticIndexing = true;
+    _semanticProgress = 0.0;
+    notifyListeners();
+
+    try {
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        debugPrint("PhotoProvider: Ensuring models are downloaded for mobile...");
+        final modelsReady = await ModelService().ensureModelsDownloaded();
+        if (!modelsReady) {
+          debugPrint("PhotoProvider: Model download failed. Aborting semantic indexing.");
+          _isSemanticIndexing = false;
+          notifyListeners();
+          return;
+        }
+      }
+      
+      await _semanticService.initialize();
+      
+      final indexableItems = _allItems.where((item) => 
+        item.type == GalleryItemType.local || item.type == GalleryItemType.remote
+      ).toList();
+      debugPrint("PhotoProvider: Total indexable items: ${indexableItems.length}");
+      
+      // Batch fetch already indexed IDs to avoid individual DB queries in loop
+      Set<String> indexedIds = await DatabaseService().getAllSemanticIndexedIds();
+      debugPrint("PhotoProvider: Already indexed count from DB: ${indexedIds.length}");
+
+      // --- Embedding Schema Version Check ---
+      // v1 = old wrong OpenAI CLIP normalization (mean/std subtraction)
+      // v2 = correct MobileCLIP2 S0 normalization (pixel/255 only)
+      // v3 = MobileCLIP2-S2 upgrade + surgical ArgMax fix + thumbnail-based indexing
+      // If version is missing or stale, wipe and re-index from scratch.
+      const String embeddingVersion = '3';
+      final storedVersion = await DatabaseService().getBackupSetting('embedding_version');
+      if (storedVersion != embeddingVersion && indexedIds.isNotEmpty) {
+        debugPrint("PhotoProvider: Embedding version mismatch (stored=$storedVersion, expected=$embeddingVersion). Clearing stale embeddings and re-indexing.");
+        await DatabaseService().clearSemanticEmbeddings();
+        indexedIds = {};
+      }
+      if (storedVersion != embeddingVersion) {
+        await DatabaseService().setBackupSetting('embedding_version', embeddingVersion);
+      }
+
+      int processed = 0;
+      int newlyIndexed = 0;
+      _semanticIndexedCount = indexedIds.length;
+
+      // --- Adaptive Memory Budget ---
+      // Calculate the desired processing speed based on device RAM.
+      // Re-evaluated every 25 images so it can speed up if user frees RAM
+      // or slow down if memory gets tight.
+      int indexingDelayMs = _getIndexingBudget();
+      debugPrint("PhotoProvider: Initial indexing budget: ${indexingDelayMs}ms delay per image.");
+
+      // Prepare cloud decryption if needed
+      SecureKey? masterKey;
+      String? userId;
+      if (indexableItems.any((i) => i.type == GalleryItemType.remote)) {
+        final session = await AuthService().loadSession();
+        if (session != null) {
+          userId = session['username'] as String;
+          final masterKeyBytes = session['masterKey'] as Uint8List;
+          masterKey = SecureKey.fromList(CryptoService().sodium, masterKeyBytes);
+        }
+      }
+
+      for (var item in indexableItems) {
+        if (!_isSemanticIndexing) break; // Allow stopping
+        
+        if (indexedIds.contains(item.id)) {
+          processed++;
+          continue;
+        }
+
+        Uint8List? imageBytes;
+        
+        if (item.type == GalleryItemType.local) {
+          // Optimization: Use 512px thumbnail instead of full file.
+          // This is much faster and prevents OOM on large JPEGs.
+          try {
+            imageBytes = await item.local?.thumbnailDataWithOption(
+              const ThumbnailOption(
+                size: ThumbnailSize(512, 512),
+                quality: 85,
+              ),
+            );
+          } catch (e) {
+            debugPrint('PhotoProvider: Thumbnail fetch failed for ${item.id}: $e');
+            // Fallback to full file if thumbnail fails
+            final file = await item.local?.file;
+            if (file != null && await file.exists()) {
+              imageBytes = await file.readAsBytes();
+            }
+          }
+        } else if (item.type == GalleryItemType.remote && item.remote != null && masterKey != null && userId != null) {
+          // Use backend proxy instead of direct MinIO presigning to avoid hostname signature mismatches (403s).
+          // The Go server fetches from MinIO internally using its local address.
+          final proxyUrl = '${ApiConfig().baseUrl}/images/download/${item.id}?user_id=$userId&variant=thumb_256';
+          try {
+            imageBytes = await BackupService().fetchAndDecryptFromUrl(proxyUrl, masterKey);
+          } catch (e) {
+            debugPrint('PhotoProvider: Proxy fetch failed for ${item.id}: $e');
+          }
+        }
+
+        if (imageBytes != null && imageBytes.isNotEmpty) {
+          debugPrint("PhotoProvider: Generating embedding for ${item.id} (${item.type})");
+          final embedding = await _semanticService.generateImageEmbeddingFromBytes(imageBytes);
+          if (embedding.isNotEmpty) {
+            await DatabaseService().saveSemanticEmbedding(item.id, embedding);
+            newlyIndexed++;
+            _semanticIndexedCount++;
+            debugPrint("PhotoProvider: Successfully indexed ${item.id}. Count: $_semanticIndexedCount");
+          } else {
+            debugPrint("PhotoProvider: Embedding generation failed/returned empty for ${item.id}");
+          }
+        } else {
+           debugPrint("PhotoProvider: imageBytes null or empty for ${item.id}");
+        }
+        
+        processed++;
+        _semanticProgress = processed / indexableItems.length;
+        if (processed % 10 == 0 || newlyIndexed % 5 == 0) notifyListeners();
+        
+        // Re-evaluate memory budget every 25 processed images so the loop
+        // can speed up if the user frees RAM, or throttle if memory gets tight.
+        if (processed % 25 == 0) {
+          final int newBudget = _getIndexingBudget();
+          if (newBudget != indexingDelayMs) {
+            debugPrint("PhotoProvider: Memory budget updated: ${indexingDelayMs}ms → ${newBudget}ms.");
+            indexingDelayMs = newBudget;
+          }
+        }
+        
+        // Yield — delay is dynamically adjusted by memory budget
+        if (indexingDelayMs > 0) {
+          await Future.delayed(Duration(milliseconds: indexingDelayMs));
+        } else {
+          await Future.delayed(Duration.zero);
+        }
+      }
+      
+      debugPrint("Semantic Indexing Complete. Total indexed: $_semanticIndexedCount. Newly indexed: $newlyIndexed.");
+    } catch (e) {
+      debugPrint("Semantic Indexing Error: $e");
+    } finally {
+      _isSemanticIndexing = false;
+      notifyListeners();
+    }
+  }
+
+  Future<List<GalleryItem>> performSemanticSearch(String query) async {
+    if (query.trim().isEmpty) return [];
+    
+    try {
+      // CLIP Prompt Engineering: Use "a photo of X" template to match training distribution.
+      // MobileCLIP2 was trained on image captions — this single template consistently
+      // outperforms raw keyword queries without adding extra inference cost.
+      final promptedQuery = 'a photo of ${query.trim().toLowerCase()}';
+      final queryEmbedding = await _semanticService.generateTextEmbedding(promptedQuery);
+      debugPrint("SemanticSearch: Query='$query' → prompted='$promptedQuery' size=${queryEmbedding.length}");
+      if (queryEmbedding.isEmpty) {
+        debugPrint("SemanticSearch: Text embedding empty — model may not be loaded.");
+        return [];
+      }
+
+      // Log actual DB row count — should be > 0 after indexing completes
+      final dbCount = await DatabaseService().getSemanticIndexedCount();
+      debugPrint("SemanticSearch: DB has $dbCount indexed embeddings.");
+
+      // minScore: 0.0, limit: 20 — always return top-20 most relevant photos.
+      // MobileCLIP2 S0 scores typically land in 0.20–0.26; a hard threshold
+      // would be too fragile. Top-N ranking is more robust for a small model.
+      final results = await DatabaseService().searchSemantic(queryEmbedding, minScore: 0.0, limit: 20);
+      debugPrint("SemanticSearch: DB returned ${results.length} raw results.");
+      if (results.isNotEmpty) {
+        final scoreLog = results.take(5).map((r) => (r['score'] as double).toStringAsFixed(3)).join(', ');
+        debugPrint("SemanticSearch: Top 5 scores: [$scoreLog]");
+      }
+
+      // Relative threshold: only keep results within 0.04 of the top score.
+      // This filters weak/irrelevant matches (e.g. manga for "red dress") without
+      // needing a hard absolute cutoff that varies per model/query.
+      final List<Map<String, dynamic>> filteredResults;
+      if (results.isEmpty) {
+        filteredResults = [];
+      } else {
+        final double topScore = results.first['score'] as double;
+        final double cutoff = topScore - 0.04;
+        filteredResults = results.where((r) => (r['score'] as double) >= cutoff).take(15).toList();
+        debugPrint("SemanticSearch: After relative filter (top-0.04=$cutoff): ${filteredResults.length} results remain.");
+      }
+
+      final Map<String, GalleryItem> itemsMap = {
+        for (var item in _allItems) item.id: item
+      };
+      debugPrint("SemanticSearch: _allItems has ${itemsMap.length} items to match against.");
+
+      final List<GalleryItem> matchedItems = [];
+      int missCount = 0;
+      for (var res in filteredResults) {
+        final id = res['id'] as String;
+        if (itemsMap.containsKey(id)) {
+          matchedItems.add(itemsMap[id]!);
+        } else {
+          missCount++;
+        }
+      }
+      debugPrint("SemanticSearch: Found ${matchedItems.length} matches, $missCount IDs not in _allItems.");
+
+      return matchedItems;
+    } catch (e) {
+      debugPrint("Semantic Search Error: $e");
+      return [];
+    }
+  }
+
+
+  /// Reads the truly available memory on Android/Linux by parsing `MemAvailable`
+  /// from `/proc/meminfo`. Unlike `MemFree`, `MemAvailable` includes reclaimable
+  /// page cache — it matches what Android reports as "available RAM" in Settings.
+  int _getAvailableMemoryMb() {
+    try {
+      if (!kIsWeb && (Platform.isAndroid || Platform.isLinux)) {
+        final meminfo = File('/proc/meminfo').readAsStringSync();
+        int? availKb;
+        int? totalKb;
+        for (final line in meminfo.split('\n')) {
+          if (line.startsWith('MemAvailable:')) {
+            availKb = int.tryParse(line.split(RegExp(r'\s+')).elementAtOrNull(1) ?? '');
+          } else if (line.startsWith('MemTotal:')) {
+            totalKb = int.tryParse(line.split(RegExp(r'\s+')).elementAtOrNull(1) ?? '');
+          }
+          if (availKb != null && totalKb != null) break;
+        }
+        if (availKb != null) return availKb ~/ 1024; // kB → MB
+      }
+    } catch (_) {}
+    // Fallback for non-Android platforms
+    return SysInfo.getFreePhysicalMemory() ~/ (1024 * 1024);
+  }
+
+  /// Calculates a per-image delay in milliseconds based on the device's total and available RAM.
+  ///
+  /// Uses `MemAvailable` from `/proc/meminfo` on Android (not `MemFree`) so that
+  /// reclaimable page cache is correctly counted as usable memory.
+  int _getIndexingBudget() {
+    try {
+      final int totalBytes = SysInfo.getTotalPhysicalMemory();
+      final double totalMb = totalBytes / (1024 * 1024);
+      final double availMb = _getAvailableMemoryMb().toDouble();
+      final double availRatio = totalMb > 0 ? availMb / totalMb : 0;
+
+      debugPrint("PhotoProvider: Memory Budget — Total: ${totalMb.toStringAsFixed(0)}MB, "
+                 "Available: ${availMb.toStringAsFixed(0)}MB (${(availRatio * 100).toStringAsFixed(0)}%)");
+
+      // Critically low available RAM — throttle hard
+      if (availMb < 300 || availRatio < 0.10) {
+        debugPrint("PhotoProvider: Memory Budget — CRITICAL. Throttling heavily (2000ms).");
+        return 2000;
+      }
+      if (availMb < 600 || availRatio < 0.20) {
+        debugPrint("PhotoProvider: Memory Budget — LOW. Throttling moderately (750ms).");
+        return 750;
+      }
+
+      // Scale primarily on total RAM (device tier)
+      if (totalMb >= 8192) {
+        debugPrint("PhotoProvider: Memory Budget — HIGH-END device. Full speed (0ms delay).");
+        return 0;
+      } else if (totalMb >= 4096) {
+        debugPrint("PhotoProvider: Memory Budget — MID-HIGH device. Fast speed (10ms delay).");
+        return 10;
+      } else if (totalMb >= 2048) {
+        debugPrint("PhotoProvider: Memory Budget — MID device. Normal speed (50ms delay).");
+        return 50;
+      } else if (totalMb >= 1024) {
+        debugPrint("PhotoProvider: Memory Budget — LOW-MID device. Reduced speed (250ms delay).");
+        return 250;
+      } else {
+        debugPrint("PhotoProvider: Memory Budget — LOW-END device. Careful speed (1000ms delay).");
+        return 1000;
+      }
+    } catch (e) {
+      debugPrint("PhotoProvider: Memory Budget — Failed to read system info. Using safe default (100ms).");
+      return 100;
+    }
   }
 }

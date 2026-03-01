@@ -13,6 +13,7 @@ class RemoteImage {
   final String? sourceId; // Original asset ID from device
   final DateTime? createdAt;
   final bool isDeleted;
+  bool isFavorite;
 
   RemoteImage({
     required this.imageId,
@@ -29,6 +30,7 @@ class RemoteImage {
     this.sourceId,
     this.createdAt,
     this.isDeleted = false,
+    this.isFavorite = false,
   });
 
   factory RemoteImage.fromJson(Map<String, dynamic> json) {
@@ -49,6 +51,7 @@ class RemoteImage {
           ? DateTime.tryParse(json['created_at']) 
           : null,
       isDeleted: json['is_deleted'] == true || json['is_deleted'] == 1,
+      isFavorite: json['is_favorite'] == true || json['is_favorite'] == 1,
     );
   }
 
@@ -68,6 +71,7 @@ class RemoteImage {
       'source_id': sourceId,
       'created_at': createdAt?.toIso8601String(),
       'is_deleted': isDeleted,
+      'is_favorite': isFavorite,
     };
   }
 }

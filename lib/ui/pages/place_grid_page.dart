@@ -7,7 +7,6 @@ import '../../providers/photo_provider.dart';
 import '../../models/gallery_item.dart';
 import '../../models/photo_group.dart';
 import '../widgets/thumbnail_widget.dart';
-import '../widgets/remote_thumbnail_widget.dart';
 import '../widgets/section_header_delegate.dart';
 import '../widgets/draggable_scroll_icon.dart';
 
@@ -102,17 +101,11 @@ class _PlaceGridPageState extends State<PlaceGridPage> {
                     delegate: SliverChildBuilderDelegate(
                       (context, index) {
                         final GalleryItem item = group.items[index];
-                        if (item.type == GalleryItemType.local) {
-                           return ThumbnailWidget(
-                             entity: item.local!,
-                             isFastScrolling: _isFastScrolling,
-                             heroTagPrefix: 'place_grid_${widget.city}',
-                           );
-                        } else {
-                           return RemoteThumbnailWidget(
-                              image: item.remote! 
-                           );
-                        }
+                        return ThumbnailWidget(
+                          item: item,
+                          isFastScrolling: _isFastScrolling,
+                          heroTagPrefix: 'place_grid_${widget.city}',
+                        );
                       },
                       childCount: group.items.length,
                     ),

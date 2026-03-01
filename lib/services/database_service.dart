@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' show sqrt;
 import 'dart:typed_data';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -99,7 +100,15 @@ class DatabaseService {
             height INTEGER,
             create_dt INTEGER,
             modify_dt INTEGER,
-            relative_path TEXT
+            relative_path TEXT,
+            is_favorite INTEGER DEFAULT 0
+          )
+        ''');
+
+        await db.execute('''
+          CREATE TABLE semantic_embeddings (
+            id TEXT PRIMARY KEY,
+            embedding BLOB
           )
         ''');
       },
@@ -170,8 +179,18 @@ class DatabaseService {
                ''');
             } catch (_) {}
           }
+          if (oldVersion < 13) {
+            try {
+               await db.execute('''
+                 CREATE TABLE IF NOT EXISTS semantic_embeddings (
+                   id TEXT PRIMARY KEY,
+                   embedding BLOB
+                 )
+               ''');
+            } catch (_) {}
+          }
       },
-      version: 11,
+      version: 13,
     );
   }
 
@@ -185,9 +204,25 @@ class DatabaseService {
     await batch.commit(noResult: true);
   }
 
+  Future<void> updateFavoriteStatus(String id, bool isFavorite) async {
+    final db = await database;
+    await db.update(
+      'local_gallery_index',
+      {'is_favorite': isFavorite ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<void> clearGalleryIndex() async {
     final db = await database;
     await db.delete('local_gallery_index');
+  }
+
+  Future<Set<String>> getFavoritesIds() async {
+    final db = await database;
+    final res = await db.query('local_gallery_index', columns: ['id'], where: 'is_favorite = 1');
+    return res.map((e) => e['id'] as String).toSet();
   }
 
   Future<List<Map<String, dynamic>>> getGalleryIndex({int limit = 500, int offset = 0}) async {
@@ -460,5 +495,94 @@ class DatabaseService {
       where: 'cluster_id = ?',
       whereArgs: [clusterId],
     );
+  }
+
+  // --- Semantic Search Operations ---
+
+  Future<void> saveSemanticEmbedding(String id, List<double> embedding) async {
+    final db = await database;
+    final Float32List floatList = Float32List.fromList(embedding);
+    await db.insert(
+      'semantic_embeddings',
+      {
+        'id': id,
+        'embedding': floatList.buffer.asUint8List(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<bool> isSemanticIndexed(String id) async {
+    final db = await database;
+    final res = await db.query('semantic_embeddings', columns: ['id'], where: 'id = ?', whereArgs: [id]);
+    return res.isNotEmpty;
+  }
+  
+  Future<int> getSemanticIndexedCount() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT COUNT(*) as count FROM semantic_embeddings');
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<Set<String>> getAllSemanticIndexedIds() async {
+    final db = await database;
+    final res = await db.query('semantic_embeddings', columns: ['id']);
+    return res.map((e) => e['id'] as String).toSet();
+  }
+
+  Future<void> clearSemanticEmbeddings() async {
+    final db = await database;
+    await db.delete('semantic_embeddings');
+  }
+
+  Future<List<Map<String, dynamic>>> searchSemantic(List<double> queryEmbedding, {int limit = 50, double minScore = 0.0}) async {
+    final db = await database;
+    final allEmbeddings = await db.query('semantic_embeddings');
+    
+    if (allEmbeddings.isEmpty) return [];
+
+    // Pre-compute query L2 norm once
+    double queryNorm = 0;
+    for (final v in queryEmbedding) queryNorm += v * v;
+    queryNorm = queryNorm > 0 ? sqrt(queryNorm) : 0;
+    if (queryNorm == 0) return []; // zero query vector can't be compared
+    
+    final List<Map<String, dynamic>> results = [];
+    
+    for (var row in allEmbeddings) {
+      final id = row['id'] as String;
+      final rawBytes = row['embedding'] as Uint8List;
+      // Android sqflite returns BLOBs at non-4-byte-aligned offsets (e.g. offset 79).
+      // Both asFloat32List() and sublistView() require 4-byte alignment and throw RangeError.
+      // Uint8List.fromList() copies into a fresh buffer at offsetInBytes==0, making it safe.
+      final embedding = Uint8List.fromList(rawBytes).buffer.asFloat32List();
+      
+      final int len = queryEmbedding.length < embedding.length
+          ? queryEmbedding.length
+          : embedding.length;
+      if (len == 0) continue;
+
+      // Dot product
+      double dot = 0;
+      for (int i = 0; i < len; i++) {
+        dot += queryEmbedding[i] * embedding[i];
+      }
+
+      // L2 norm of stored embedding
+      double embNorm = 0;
+      for (int i = 0; i < embedding.length; i++) embNorm += embedding[i] * embedding[i];
+      embNorm = embNorm > 0 ? sqrt(embNorm) : 0;
+      if (embNorm == 0) continue; // skip zero/corrupted embeddings
+
+      // Cosine similarity in [-1, 1]
+      final double cosine = dot / (queryNorm * embNorm);
+      
+      if (cosine >= minScore) {
+        results.add({'id': id, 'score': cosine});
+      }
+    }
+
+    results.sort((a, b) => (b['score'] as double).compareTo(a['score'] as double));
+    return results.take(limit).toList();
   }
 }

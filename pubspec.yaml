@@ -40,6 +40,8 @@ dependencies:
   sqflite_common_ffi_web: ^1.1.1
   xml: ^6.6.1
   url_launcher: ^6.3.2
+  share_plus: ^10.1.4
+  system_info2: ^4.1.0
 
 dev_dependencies:
   flutter_test:
@@ -50,3 +52,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
+    - assets/models/semantic/clip_vocab.json
+    - assets/models/semantic/clip_merges.txt

@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   fl_training_plugin
   flutter_secure_storage_windows
   permission_handler_windows
+  share_plus
   sodium_libs
   url_launcher_windows
 )

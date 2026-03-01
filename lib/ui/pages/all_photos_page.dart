@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui';
 import 'dart:typed_data';
@@ -13,7 +14,6 @@ import '../../models/photo_group.dart';
 import '../../models/gallery_item.dart';
 import '../widgets/section_header_delegate.dart';
 import '../widgets/thumbnail_widget.dart';
-import '../widgets/remote_thumbnail_widget.dart';
 import '../widgets/draggable_scroll_icon.dart';
 import '../widgets/album_cover_widget.dart';
 import 'package:file_picker/file_picker.dart';
@@ -44,6 +44,13 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   Alignment _scaleAlignment = Alignment.center;
   Offset _lastFocalPoint = Offset.zero;
 
+  // Search State
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  List<GalleryItem>? _searchResults;
+  bool _isSearching = false;
+  Timer? _searchDebounce;
+
   @override
   void initState() {
     super.initState();
@@ -58,7 +65,26 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
         provider.checkPermission();
       } else {
         provider.fetchRemotePhotos();
+        provider.startSemanticIndexing();
       }
+    });
+  }
+
+  void _runSearch(String val) async {
+    if (val.trim().isEmpty) {
+      setState(() {
+        _searchResults = null;
+        _isSearching = false;
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _isSearching = true);
+    final results = await context.read<PhotoProvider>().performSemanticSearch(val);
+    if (!mounted) return;
+    setState(() {
+      _searchResults = results;
+      _isSearching = false;
     });
   }
 
@@ -203,10 +229,13 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _scrollController.dispose();
     _scaleNotifier.dispose();
     _zoomAnimateController.dispose();
     _isFastScrolling.dispose();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -698,7 +727,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                   height: 44,
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(30), // Modern Pill Search Bar
+                    borderRadius: BorderRadius.circular(30),
                     border: Border.all(color: Colors.white.withOpacity(0.05)),
                   ),
                   padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -706,14 +735,54 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                     children: [
                       const Icon(Icons.search, color: Colors.white54, size: 20),
                       const SizedBox(width: 12),
-                      const Expanded(
-                        child: Text(
-                          'Search for albums, dates, descriptions, ...',
-                          style: TextStyle(color: Colors.white54, fontSize: 13),
-                          overflow: TextOverflow.ellipsis,
+                      Expanded(
+                        child: TextField(
+                          controller: _searchController,
+                          focusNode: _searchFocusNode,
+                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                          // Keep keyboard open on Android after submitting
+                          textInputAction: TextInputAction.search,
+                          onChanged: (val) {
+                            // Debounce: wait 500ms after user stops typing
+                            _searchDebounce?.cancel();
+                            if (val.trim().isEmpty) {
+                              setState(() {
+                                _searchResults = null;
+                                _isSearching = false;
+                              });
+                              return;
+                            }
+                            _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+                              _runSearch(val);
+                            });
+                          },
+                          onSubmitted: (val) {
+                            // Immediate search on keyboard Search/Done press
+                            _searchDebounce?.cancel();
+                            _runSearch(val);
+                          },
+                          decoration: const InputDecoration(
+                            hintText: 'Search for cats, beaches, sunset...',
+                            hintStyle: TextStyle(color: Colors.white54, fontSize: 13),
+                            border: InputBorder.none,
+                            isDense: true,
+                            contentPadding: EdgeInsets.zero,
+                          ),
                         ),
                       ),
-                      if (MediaQuery.of(context).size.width > 600)
+                      if (_searchController.text.isNotEmpty)
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() {
+                              _searchResults = null;
+                              _isSearching = false;
+                            });
+                          },
+                        ),
+                      if (MediaQuery.of(context).size.width > 600 && _searchController.text.isEmpty)
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
@@ -767,7 +836,25 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
               if (provider.isLoading && provider.allAssets.isEmpty && provider.remoteImages.isEmpty) {
                 return const Center(child: CircularProgressIndicator(color: Colors.white70));
               }
-               if (provider.groupedByDay.isEmpty && provider.groupedByMonth.isEmpty && provider.groupedByYear.isEmpty) {
+
+              if (_isSearching) {
+                return const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(color: Colors.white70),
+                      SizedBox(height: 16),
+                      Text('Searching semantically...', style: TextStyle(color: Colors.white70)),
+                    ],
+                  ),
+                );
+              }
+
+              if (_searchResults != null) {
+                return _buildSearchResults(provider);
+              }
+
+              if (provider.groupedByDay.isEmpty && provider.groupedByMonth.isEmpty && provider.groupedByYear.isEmpty) {
                 return const Center(child: Text('No photos found.'));
               }
 
@@ -809,7 +896,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                     child: CustomScrollView(
                         controller: _scrollController,
                         physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
-                        cacheExtent: 1500, // Preload pixels off-screen so images pop in instantly
+                        cacheExtent: 1500,
                         slivers: [
                           SliverToBoxAdapter(
                             child: _buildAlbumsRow(provider),
@@ -834,20 +921,12 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                                 ),
                               delegate: SliverChildBuilderDelegate(
                                 (context, index) {
-                                  final GalleryItem item = group.items[index];
-                                  if (item.type == GalleryItemType.local) {
-                                     return ThumbnailWidget(
-                                       entity: item.local!,
-                                       isFastScrolling: _isFastScrolling,
-                                       heroTagPrefix: 'all_photos',
-                                     );
-                                  } else {
-                                     return RemoteThumbnailWidget(
-                                        image: item.remote! 
-                                        // No fast scrolling optimized signal passed yet, but loads async
-                                        // RemoteThumbnailWidget handles loading state
-                                     );
-                                  }
+                                  final item = group.items[index];
+                                  return ThumbnailWidget(
+                                    item: item,
+                                    isFastScrolling: _isFastScrolling,
+                                    heroTagPrefix: 'all_photos',
+                                  );
                                 },
                                 childCount: group.items.length,
                               ),
@@ -861,6 +940,8 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                 );
               },
           ),
+          
+          _buildIndexingProgress(),
           
           // Modern Floating Action Bar
           Consumer<SelectionProvider>(
@@ -1030,6 +1111,91 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildSearchResults(PhotoProvider provider) {
+    if (_searchResults != null && _searchResults!.isEmpty) {
+      return const Center(child: Text('No semantic matches found.'));
+    }
+
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final int crossAxisCount = screenWidth < 600 ? 3 : 6;
+
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome_rounded, color: Colors.blueAccent, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'Semantic Results for "${_searchController.text}"',
+                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0),
+          sliver: SliverGrid(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: crossAxisCount,
+              crossAxisSpacing: 4,
+              mainAxisSpacing: 4,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) => ThumbnailWidget(
+                item: _searchResults![index],
+                isFastScrolling: _isFastScrolling,
+                heroTagPrefix: 'search_results',
+              ),
+              childCount: _searchResults!.length,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildIndexingProgress() {
+    return Consumer<PhotoProvider>(
+      builder: (context, provider, child) {
+        if (!provider.isSemanticIndexing) return const SizedBox.shrink();
+
+        return Positioned(
+          top: 10,
+          right: 20,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                color: Colors.white.withOpacity(0.1),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Analyzing: ${(provider.semanticProgress * 100).toInt()}%',
+                      style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

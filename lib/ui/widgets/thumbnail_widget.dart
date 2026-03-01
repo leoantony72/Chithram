@@ -6,11 +6,16 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../providers/selection_provider.dart';
+import 'package:sodium_libs/sodium_libs_sumo.dart';
 import '../../services/thumbnail_cache.dart';
+import '../../services/crypto_service.dart';
+import '../../services/auth_service.dart';
+import '../../services/backup_service.dart';
 import '../../models/gallery_item.dart';
 
 class ThumbnailWidget extends StatefulWidget {
-  final AssetEntity entity;
+  final AssetEntity? entity;
+  final GalleryItem? item;
   final ValueListenable<bool>? isFastScrolling;
   final String? heroTagPrefix;
   final VoidCallback? onTap;
@@ -18,7 +23,8 @@ class ThumbnailWidget extends StatefulWidget {
   
   const ThumbnailWidget({
     super.key, 
-    required this.entity,
+    this.entity,
+    this.item,
     this.isFastScrolling,
     this.heroTagPrefix,
     this.onTap,
@@ -38,10 +44,16 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   Timer? _timer;
   Timer? _loadTimer;
 
+  GalleryItem get _effectiveItem {
+    if (widget.item != null) return widget.item!;
+    return GalleryItem.local(widget.entity!);
+  }
+
   @override
   void initState() {
     super.initState();
-    _bytes = ThumbnailCache().getMemory(widget.entity.id);
+    final id = _effectiveItem.id;
+    _bytes = ThumbnailCache().getMemory(id);
     _initShowState();
     
     if (widget.isFastScrolling != null) {
@@ -78,11 +90,11 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   @override
   void didUpdateWidget(ThumbnailWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.entity.id != oldWidget.entity.id) {
+    if (_effectiveItem.id != (oldWidget.item?.id ?? oldWidget.entity?.id)) {
        _timer?.cancel();
        _loadTimer?.cancel();
        _originFile = null;
-       _bytes = ThumbnailCache().getMemory(widget.entity.id);
+       _bytes = ThumbnailCache().getMemory(_effectiveItem.id);
        _initShowState();
     }
     
@@ -110,50 +122,86 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
     
     _isLoading = true;
 
-    if (widget.isHighRes) {
-       try {
-         if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-            final file = await widget.entity.originFile;
-            if (file != null && await file.exists()) {
-               final ext = file.path.toLowerCase();
-               if (!ext.endsWith('.heic') && !ext.endsWith('.heif') && !ext.endsWith('.raw') && !ext.endsWith('.dng')) {
-                  if (mounted) setState(() => _originFile = file);
-                  return;
-               } else {
-                  final convertedFile = await ThumbnailCache().getConvertedHighResFile(widget.entity);
-                  if (mounted && convertedFile != null && await convertedFile.exists()) {
-                     setState(() => _originFile = convertedFile);
-                     return;
-                  }
-               }
-            }
-         }
+    final item = _effectiveItem;
 
-         final bytes = await widget.entity.thumbnailDataWithSize(
-            const ThumbnailSize.square(1000), 
-            quality: 100 
-         );
-         
-         if (mounted && bytes != null && bytes.isNotEmpty) {
-            setState(() => _bytes = bytes);
+    if (item.type == GalleryItemType.local) {
+      final entity = item.local!;
+      if (widget.isHighRes) {
+         try {
+           if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+              final file = await entity.originFile;
+              if (file != null && await file.exists()) {
+                 final ext = file.path.toLowerCase();
+                 if (!ext.endsWith('.heic') && !ext.endsWith('.heif') && !ext.endsWith('.raw') && !ext.endsWith('.dng')) {
+                    if (mounted) setState(() => _originFile = file);
+                    return;
+                 } else {
+                    final convertedFile = await ThumbnailCache().getConvertedHighResFile(entity);
+                    if (mounted && convertedFile != null && await convertedFile.exists()) {
+                       setState(() => _originFile = convertedFile);
+                       return;
+                    }
+                 }
+              }
+           }
+
+           final bytes = await entity.thumbnailDataWithSize(
+              const ThumbnailSize.square(1000), 
+              quality: 100 
+           );
+           
+           if (mounted && bytes != null && bytes.isNotEmpty) {
+              setState(() => _bytes = bytes);
+           }
+         } catch (e) {
+            debugPrint("Error loading high-res thumbnail: $e");
+         } finally {
+           if (mounted) setState(() => _isLoading = false);
          }
-       } catch (e) {
-          debugPrint("Error loading high-res thumbnail: $e");
-       } finally {
-         if (mounted) setState(() => _isLoading = false);
-       }
+      } else {
+         try {
+           final bytes = await ThumbnailCache().getThumbnail(entity);
+           if (mounted && bytes != null) {
+              setState(() => _bytes = bytes);
+           }
+         } catch (e) {
+           debugPrint("Error getting cached thumbnail: $e");
+         } finally {
+           if (mounted) setState(() => _isLoading = false);
+         }
+      }
     } else {
-       // Standard grid requests hit the ThumbnailCache asynchronously
-       try {
-         final bytes = await ThumbnailCache().getThumbnail(widget.entity);
-         if (mounted && bytes != null) {
-            setState(() => _bytes = bytes);
-         }
-       } catch (e) {
-         debugPrint("Error getting cached thumbnail: $e");
-       } finally {
-         if (mounted) setState(() => _isLoading = false);
-       }
+      // Remote Loading Logic
+      try {
+        final remote = item.remote!;
+        final crypto = CryptoService(); 
+        final session = await AuthService().loadSession();
+        if (session == null) return;
+
+        final masterKeyBytes = session['masterKey'] as Uint8List;
+        final key = SecureKey.fromList(crypto.sodium, masterKeyBytes);
+
+        var url = remote.thumb256Url;
+        if (url.isEmpty) url = remote.thumb64Url;
+
+        if (widget.isHighRes && remote.originalUrl.isNotEmpty) {
+            url = remote.originalUrl;
+        }
+
+        if (url.isNotEmpty) {
+          final data = await BackupService().fetchAndDecryptFromUrl(url, key);
+          if (mounted && data != null) {
+            if (!widget.isHighRes) {
+               ThumbnailCache().putMemory(remote.imageId, data);
+            }
+            setState(() => _bytes = data);
+          }
+        }
+      } catch (e) {
+        debugPrint("Error loading remote thumb in unified widget: $e");
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -167,64 +215,27 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final item = GalleryItem.local(widget.entity);
-    // Use `context.select` to only rebuild this specific widget when ITS selection state changes.
-    // Extremely lightweight compared to a full Consumer tree.
+    final item = _effectiveItem;
     final isSelected = context.select<SelectionProvider, bool>((s) => s.isSelected(item));
     final isSelectionMode = context.select<SelectionProvider, bool>((s) => s.isSelectionMode);
 
     Widget imageContent;
-    if (widget.isHighRes) {
-      if (_originFile != null) {
-        imageContent = Image.file(
-           _originFile!, 
-           fit: BoxFit.cover, 
-           gaplessPlayback: true,
-           errorBuilder: (context, error, stackTrace) {
-              debugPrint("Image.file codec error: $error");
-              return Container(
-                 color: Colors.grey[900],
-                 child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 32)),
-              );
-           },
-        );
-      } else if (_bytes != null && _bytes!.isNotEmpty) {
-        imageContent = Image.memory(
-           _bytes!, 
-           fit: BoxFit.cover, 
-           gaplessPlayback: true,
-           errorBuilder: (context, error, stackTrace) {
-              debugPrint("Image.memory codec error: $error");
-              return Container(
-                 color: Colors.grey[900],
-                 child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 32)),
-              );
-           },
-        );
-      } else {
-        imageContent = Container(color: Colors.grey[900]);
-      }
+    if (_originFile != null) {
+      imageContent = Image.file(
+         _originFile!, 
+         fit: BoxFit.cover, 
+         gaplessPlayback: true,
+         errorBuilder: (context, error, stackTrace) => _buildPlaceholder(),
+      );
+    } else if (_bytes != null && _bytes!.isNotEmpty) {
+      imageContent = Image.memory(
+         _bytes!, 
+         fit: BoxFit.cover, 
+         gaplessPlayback: true,
+         errorBuilder: (context, error, stackTrace) => _buildPlaceholder(),
+      );
     } else {
-      if (_bytes != null && _bytes!.isNotEmpty) {
-        imageContent = Image.memory(
-           _bytes!, 
-           fit: BoxFit.cover, 
-           gaplessPlayback: true,
-           errorBuilder: (context, error, stackTrace) {
-              debugPrint("Image.memory codec error: $error");
-              return Container(
-                 color: Colors.grey[900],
-                 child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 32)),
-              );
-           },
-        );
-      } else if (_showImage) {
-        // Fallback loading state before bytes return from cache
-        imageContent = Container(color: Colors.grey[900]); 
-      } else {
-        // Fast scrolling proxy
-        imageContent = Container(color: Colors.grey[900]);
-      }
+      imageContent = _buildPlaceholder();
     }
 
     return RepaintBoundary(
@@ -245,7 +256,6 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
           onLongPress: () {
             context.read<SelectionProvider>().toggleSelection(item);
           },
-          // Minimal static layouts instead of AnimatedContainer
           child: Padding(
             padding: isSelected ? const EdgeInsets.all(8.0) : EdgeInsets.zero,
             child: ClipRRect(
@@ -258,18 +268,18 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
                     child: imageContent,
                   ),
                   
-                  if (widget.entity.type == AssetType.video)
+                  if (item.type == GalleryItemType.local && item.local!.type == AssetType.video)
                     Positioned(
                       top: 4,
                       right: 4,
                       child: Container(
                         padding: const EdgeInsets.all(4),
                         decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.5),
+                          color: Colors.black.withOpacity(0.5),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
-                          _formatDuration(widget.entity.videoDuration),
+                          _formatDuration(item.local!.videoDuration),
                           style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
                         ),
                       ),
@@ -278,7 +288,7 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
                   if (isSelected)
                     Positioned.fill(
                       child: Container(
-                        color: Colors.black.withValues(alpha: 0.3),
+                        color: Colors.black.withOpacity(0.3),
                         child: const Align(
                           alignment: Alignment.topLeft,
                           child: Padding(
@@ -295,11 +305,29 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
                         left: 8,
                         child: Icon(Icons.circle_outlined, color: Colors.white70, size: 24),
                      ),
+
+                   if (item.isFavorite)
+                     Positioned(
+                       bottom: 8,
+                       right: 8,
+                       child: Icon(Icons.favorite, color: Colors.redAccent.withOpacity(0.8), size: 16),
+                     ),
                 ],
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildPlaceholder() {
+    return Container(
+      color: Colors.grey[900],
+      child: Center(
+        child: _isLoading 
+            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24))
+            : const Icon(Icons.image, color: Colors.white10, size: 32),
       ),
     );
   }
