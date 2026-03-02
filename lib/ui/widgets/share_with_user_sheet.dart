@@ -6,12 +6,16 @@ import '../../services/auth_service.dart';
 
 class ShareWithUserSheet extends StatefulWidget {
   final String imageId;
+  final int? width;
+  final int? height;
   final Future<Uint8List?> Function() fetchImageBytes;
-  final Future<String?> Function(String receiverUsername, String shareType, Uint8List imageBytes) onCreateShare;
+  final Future<String?> Function(String receiverUsername, String shareType, Uint8List imageBytes, int? width, int? height) onCreateShare;
 
   const ShareWithUserSheet({
     super.key,
     required this.imageId,
+    this.width,
+    this.height,
     required this.fetchImageBytes,
     required this.onCreateShare,
   });
@@ -75,7 +79,7 @@ class _ShareWithUserSheetState extends State<ShareWithUserSheet> {
       return;
     }
 
-    final shareId = await widget.onCreateShare(username, _shareType, bytes);
+    final shareId = await widget.onCreateShare(username, _shareType, bytes, widget.width, widget.height);
     if (!mounted) return;
     setState(() => _loading = false);
     if (shareId != null) {

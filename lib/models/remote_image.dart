@@ -14,6 +14,7 @@ class RemoteImage {
   final String mimeType;
   final String? sourceId; // Original asset ID from device
   final DateTime? createdAt;
+  final DateTime? modifiedAt;
   final bool isDeleted;
   bool isFavorite;
 
@@ -33,6 +34,7 @@ class RemoteImage {
     this.mimeType = 'image/jpeg',
     this.sourceId,
     this.createdAt,
+    this.modifiedAt,
     this.isDeleted = false,
     this.isFavorite = false,
   });
@@ -56,6 +58,9 @@ class RemoteImage {
       createdAt: json['created_at'] != null 
           ? DateTime.tryParse(json['created_at']) 
           : null,
+      modifiedAt: json['modified_at'] != null
+          ? DateTime.tryParse(json['modified_at'])
+          : null,
       isDeleted: json['is_deleted'] == true || json['is_deleted'] == 1,
       isFavorite: json['is_favorite'] == true || json['is_favorite'] == 1,
     );
@@ -78,6 +83,7 @@ class RemoteImage {
       'mime_type': mimeType,
       'source_id': sourceId,
       'created_at': createdAt?.toIso8601String(),
+      'modified_at': modifiedAt?.toIso8601String(),
       'is_deleted': isDeleted,
       'is_favorite': isFavorite,
     };

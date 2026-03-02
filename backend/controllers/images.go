@@ -16,10 +16,10 @@ import (
 // ImageResponse mirrors the database model but adds Signed URLs
 type ImageResponse struct {
 	models.Image
-	OriginalURL   string `json:"original_url"`
-	Thumb1024URL  string `json:"thumb_1024_url"`
-	Thumb256URL   string `json:"thumb_256_url"`
-	Thumb64URL    string `json:"thumb_64_url"`
+	OriginalURL  string `json:"original_url"`
+	Thumb1024URL string `json:"thumb_1024_url"`
+	Thumb256URL  string `json:"thumb_256_url"`
+	Thumb64URL   string `json:"thumb_64_url"`
 }
 
 type AlbumResponse struct {
@@ -27,35 +27,32 @@ type AlbumResponse struct {
 	CoverImage string `json:"cover_image_url"`
 }
 
-// RegisterImage registers an image's metadata after it has been uploaded to MinIO
-func RegisterImage(c *gin.Context) {
-	fmt.Println("RegisterImage: Received request")
+// RegisterOrUpdateImage registers a new image or updates an existing one (upsert).
+func RegisterOrUpdateImage(c *gin.Context) {
 	var input models.Image
 	if err := c.ShouldBindJSON(&input); err != nil {
-		fmt.Println("RegisterImage Bind Error:", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Set timestamps if not provided
+	now := time.Now()
 	if input.CreatedAt.IsZero() {
-		input.CreatedAt = time.Now()
+		input.CreatedAt = now
 	}
 	if input.UploadedAt.IsZero() {
-		input.UploadedAt = time.Now()
+		input.UploadedAt = now
 	}
-	if input.ModifiedAt.IsZero() {
-		input.ModifiedAt = time.Now()
-	}
+	input.ModifiedAt = now
 
-	// Save to DB
-	if err := database.DB.Create(&input).Error; err != nil {
-		fmt.Println("RegisterImage DB Error:", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register image"})
+	// Use GORM's Save which performs an upsert based on the primary key (image_id)
+	if err := database.DB.Save(&input).Error; err != nil {
+		fmt.Println("RegisterOrUpdateImage DB Error:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register or update image"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Image registered successfully", "image": input})
+	c.JSON(http.StatusOK, gin.H{"message": "Image registered/updated successfully", "image": input})
 }
 
 // ListImages returns a paginated list of images with signed URLs
@@ -532,6 +529,43 @@ func UpdateImageAlbum(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully assigned %d images to album %s", len(input.ImageIDs), input.AlbumName)})
+}
+
+// UpdateImageFavorite performs a bulk update of the favorite status for the specified image IDs.
+func UpdateImageFavorite(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var input struct {
+		ImageIDs   []string `json:"image_ids" binding:"required"`
+		IsFavorite bool     `json:"is_favorite"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if len(input.ImageIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No image IDs provided"})
+		return
+	}
+
+	now := time.Now()
+	if err := database.DB.Model(&models.Image{}).
+		Where("user_id = ? AND image_id IN (?)", userID, input.ImageIDs).
+		Updates(map[string]interface{}{
+			"is_favorite": input.IsFavorite,
+			"modified_at": now,
+		}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update favorite status in database"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Successfully updated favorite status for %d images", len(input.ImageIDs))})
 }
 
 // DownloadImage proxies a file download from MinIO to the client

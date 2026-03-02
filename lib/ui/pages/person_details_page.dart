@@ -3,16 +3,17 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:collection/collection.dart';
-import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:sodium_libs/sodium_libs_sumo.dart';
+import 'package:provider/provider.dart';
+import 'package:go_router/go_router.dart';
+import '../../providers/photo_provider.dart';
+import '../../models/gallery_item.dart';
 import '../../services/database_service.dart';
 import '../../services/auth_service.dart';
 import '../../services/crypto_service.dart';
 import '../../services/backup_service.dart';
 import '../../models/remote_image.dart';
 import '../widgets/section_header_delegate.dart';
-import '../widgets/remote_photo_viewer.dart';
-import 'package:extended_image/extended_image.dart';
 
 class PersonDetailsPage extends StatefulWidget {
   final String personName;
@@ -166,70 +167,111 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
           ? const Center(child: CircularProgressIndicator())
           : _groupedFiles.isEmpty
               ? const Center(child: Text('No photos found.'))
-              : CustomScrollView(
-                  slivers: [
-                    for (var group in _groupedFiles) ...[
-                      SliverPersistentHeader(
-                        delegate: SectionHeaderDelegate(title: _formatDate(group.date)),
-                      ),
-                      SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                        sliver: SliverGrid(
-                          gridDelegate: kIsWeb
-                              ? const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 6,
-                                  crossAxisSpacing: 4,
-                                  mainAxisSpacing: 4,
-                                )
-                              : const SliverGridDelegateWithMaxCrossAxisExtent(
-                                  maxCrossAxisExtent: 220,
-                                  crossAxisSpacing: 4,
-                                  mainAxisSpacing: 4,
-                                ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, index) {
-                            final item = group.items[index];
-                            if (group.isCloud) {
-                               return _CloudPhotoTile(imageId: item as String);
-                            } else {
-                               final file = item as io.File;
-                               if (kIsWeb) return const SizedBox.shrink(); 
-                               return GestureDetector(
-                                  onTap: () {
-                                     Navigator.push(context, MaterialPageRoute(builder: (_) => _SimplePhotoViewer(file: file)));
-                                  },
-                                  child: Stack(
-                                     fit: StackFit.expand,
-                                     children: [
-                                        Image.file(
-                                           file, 
-                                           fit: BoxFit.cover, 
-                                           cacheWidth: 600, 
-                                           filterQuality: FilterQuality.high,
-                                           errorBuilder: (context, error, stackTrace) => Container(
-                                              color: Colors.grey[900], 
-                                              child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24))
-                                           ),
-                                        ),
-                                        Positioned(
-                                           bottom: 4, right: 4,
-                                           child: Container(
+              : Consumer<PhotoProvider>(
+                  builder: (context, provider, _) {
+                    // Build a flat list of all local GalleryItems for this person
+                    // so swiping works across the full set in AssetViewerPage.
+                    final List<GalleryItem> allLocalItems = [];
+                    for (final group in _groupedFiles) {
+                      if (!group.isCloud) {
+                        for (final f in group.items) {
+                          final file = f as io.File;
+                          final asset = provider.allItems.firstWhereOrNull(
+                            (item) =>
+                                item.type == GalleryItemType.local &&
+                                (item.local?.relativePath != null &&
+                                    file.path.endsWith(item.local!.relativePath!)),
+                          );
+                          if (asset != null) allLocalItems.add(asset);
+                        }
+                      }
+                    }
+
+                    return CustomScrollView(
+                      slivers: [
+                        for (var group in _groupedFiles) ...[
+                          SliverPersistentHeader(
+                            delegate: SectionHeaderDelegate(title: _formatDate(group.date)),
+                          ),
+                          SliverPadding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                            sliver: SliverGrid(
+                              gridDelegate: kIsWeb
+                                  ? const SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: 6,
+                                      crossAxisSpacing: 4,
+                                      mainAxisSpacing: 4,
+                                    )
+                                  : const SliverGridDelegateWithMaxCrossAxisExtent(
+                                      maxCrossAxisExtent: 220,
+                                      crossAxisSpacing: 4,
+                                      mainAxisSpacing: 4,
+                                    ),
+                              delegate: SliverChildBuilderDelegate(
+                                (context, index) {
+                                  final item = group.items[index];
+                                  if (group.isCloud) {
+                                    return _CloudPhotoTile(imageId: item as String);
+                                  } else {
+                                    final file = item as io.File;
+                                    if (kIsWeb) return const SizedBox.shrink();
+
+                                    // Find the matching AssetEntity so we can open AssetViewerPage
+                                    final galleryItem = provider.allItems.firstWhereOrNull(
+                                      (gi) =>
+                                          gi.type == GalleryItemType.local &&
+                                          gi.local?.relativePath != null &&
+                                          file.path.endsWith(gi.local!.relativePath!),
+                                    );
+
+                                    return GestureDetector(
+                                      onTap: () {
+                                        if (galleryItem != null) {
+                                          context.push('/viewer', extra: {
+                                            'item': galleryItem,
+                                            'items': allLocalItems.isNotEmpty
+                                                ? allLocalItems
+                                                : null,
+                                          });
+                                        }
+                                      },
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          Image.file(
+                                            file,
+                                            fit: BoxFit.cover,
+                                            cacheWidth: 600,
+                                            filterQuality: FilterQuality.high,
+                                            errorBuilder: (context, error, stackTrace) => Container(
+                                              color: Colors.grey[900],
+                                              child: const Center(
+                                                child: Icon(Icons.broken_image, color: Colors.white24, size: 24),
+                                              ),
+                                            ),
+                                          ),
+                                          Positioned(
+                                            bottom: 4, right: 4,
+                                            child: Container(
                                               padding: const EdgeInsets.all(4),
-                                              decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                                              decoration: const BoxDecoration(
+                                                  color: Colors.black54, shape: BoxShape.circle),
                                               child: const Icon(Icons.sd_storage, size: 16, color: Colors.white),
-                                           ),
-                                        ),
-                                     ],
-                                  ),
-                               );
-                            }
-                          },
-                          childCount: group.items.length,
-                        ),
-                      ),
-                    ),
-                  ]
-                  ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }
+                                },
+                                childCount: group.items.length,
+                              ),
+                            ),
+                          ),
+                        ]
+                      ],
+                    );
+                  },
                 ),
     );
   }
@@ -426,20 +468,8 @@ class _CloudPhotoTileState extends State<_CloudPhotoTile> {
     return GestureDetector(
        onTap: () {
           if (_remoteImage != null) {
-              Navigator.push(context, MaterialPageRoute(
-                 builder: (_) => Scaffold(
-                    extendBodyBehindAppBar: true,
-                    appBar: AppBar(
-                      backgroundColor: Colors.transparent, 
-                      elevation: 0,
-                      iconTheme: const IconThemeData(color: Colors.white),
-                    ),
-                    backgroundColor: Colors.black,
-                    body: Center(
-                      child: RemotePhotoViewer(remote: _remoteImage!, isActive: true),
-                    ),
-                 )
-              ));
+            final galleryItem = GalleryItem.remote(_remoteImage!);
+            context.push('/viewer', extra: galleryItem);
           }
        },
        child: Stack(
@@ -468,41 +498,3 @@ class _CloudPhotoTileState extends State<_CloudPhotoTile> {
   }
 }
 
-class _SimplePhotoViewer extends StatelessWidget {
-  final dynamic file;
-  const _SimplePhotoViewer({required this.file});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent, 
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-      ),
-      backgroundColor: Colors.black,
-      body: Center(
-        child: kIsWeb 
-            ? const Text('Not supported on Web', style: TextStyle(color: Colors.white)) 
-            : ExtendedImage.file(
-                file as dynamic, 
-                fit: BoxFit.contain,
-                mode: ExtendedImageMode.gesture,
-                onDoubleTap: (state) {
-                   final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
-                   double targetScale = 1.0;
-                   if (beginScale <= 1.001) targetScale = 3.0;
-                   state.handleDoubleTap(scale: targetScale, doubleTapPosition: state.pointerDownPosition);
-                },
-                initGestureConfigHandler: (state) => GestureConfig(
-                   inPageView: false,
-                   minScale: 0.9,
-                   maxScale: 10.0,
-                   cacheGesture: true,
-                ),
-              ),
-      ),
-    );
-  }
-}

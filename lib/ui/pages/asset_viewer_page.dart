@@ -12,6 +12,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:collection/collection.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlong;
@@ -360,13 +361,17 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
       isScrollControlled: true,
       builder: (ctx) => ShareWithUserSheet(
         imageId: remote.imageId,
+        width: remote.width,
+        height: remote.height,
         fetchImageBytes: () => BackupService().fetchAndDecryptFromUrl(remote.originalUrl, masterKey),
-        onCreateShare: (receiverUsername, shareType, imageBytes) =>
+        onCreateShare: (receiverUsername, shareType, imageBytes, w, h) =>
             ShareService().createShare(
               receiverUsername: receiverUsername,
               imageId: remote.imageId,
               shareType: shareType,
               imageBytes: imageBytes,
+              width: w,
+              height: h,
             ),
       ),
     );
@@ -393,7 +398,17 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
     }
 
     if (assetToEdit != null) {
-      final bool? edited = await context.push<bool>('/edit', extra: assetToEdit);
+      final remote = item.type == GalleryItemType.remote ? item.remote : provider.remoteImages.firstWhereOrNull((r) => r.sourceId == item.id);
+      
+      final bool? edited = await context.push<bool>('/edit', extra: {
+        'asset': assetToEdit,
+        'remoteImageId': remote?.imageId,
+        'latitude': remote?.latitude,
+        'longitude': remote?.longitude,
+        'album': remote?.album,
+        'mimeType': remote?.mimeType,
+      });
+      
       if (edited == true) {
         // Refresh the whole gallery because IDs or file paths have changed
         await provider.fetchAssets(force: true);
@@ -447,7 +462,14 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
           if (newAsset == null) throw Exception("Failed to save image to device.");
           
           if (context.mounted) {
-             final bool? edited = await context.push<bool>('/edit', extra: newAsset);
+             final bool? edited = await context.push<bool>('/edit', extra: {
+               'asset': newAsset,
+               'remoteImageId': remote.imageId,
+               'latitude': remote.latitude,
+               'longitude': remote.longitude,
+               'album': remote.album,
+               'mimeType': remote.mimeType,
+             });
              if (edited == true) {
                 await provider.fetchAssets(force: true);
                 if (context.mounted) Navigator.pop(context);

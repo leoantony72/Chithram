@@ -293,7 +293,7 @@ class ThumbnailCache {
 
     // 2. Disk Check
     final file = _getFile(entity.id);
-    if (await file.exists()) {
+    if (file != null && await file.exists()) {
       try {
         final diskBytes = await file.readAsBytes();
         if (diskBytes.isNotEmpty) {
@@ -320,7 +320,7 @@ class ThumbnailCache {
         // 4. Save to Memory and Disk
         putMemory(entity.id, bytes);
         // Fire and forget disk write to avoid blocking UI too much
-        _saveToDisk(file, bytes); 
+        if (file != null) _saveToDisk(file, bytes); 
         return bytes;
       }
     } catch (e) {
@@ -355,26 +355,47 @@ class ThumbnailCache {
 
   /// Removes a specific thumbnail from both memory and disk cache.
   Future<void> invalidate(String id) async {
+    if (!_isInitialized) await init(); // Ensure we are ready
+    
     // 1. Remove from memory
     if (_memoryCache.containsKey(id)) {
       _currentMemorySizeBytes -= _memoryCache[id]!.lengthInBytes;
       _memoryCache.remove(id);
     }
 
-    // 2. Remove from disk
+    // 2. Remove from disk (Thumbnail)
     try {
       final file = _getFile(id);
-      if (await file.exists()) {
+      if (file != null && await file.exists()) {
         await file.delete();
+        final filename = file.uri.pathSegments.last;
+        _diskCacheKeys.remove(filename);
       }
-      
-      final safeId = base64Url.encode(utf8.encode(id));
-      _diskCacheKeys.remove(safeId);
-      
-      // Note: We don't surgically remove from index.txt for performance.
-      // It will just be a MISS on next load, which is fine.
     } catch (e) {
       debugPrint("Error invalidating thumbnail on disk: $e");
+    }
+
+    // 3. Remove from disk (High-Res Conversion / Remote Original)
+    try {
+      if (_convertedDir != null) {
+        // High-res conversion name
+        final safeName = base64Url.encode(utf8.encode(id)).replaceAll('=', '') + '.jpg';
+        final targetFile = File('${_convertedDir!.path}/$safeName');
+        if (await targetFile.exists()) {
+          await targetFile.delete();
+        }
+
+        // Remote original names
+        final baseName = 'remote_' + base64Url.encode(utf8.encode(id)).replaceAll('=', '');
+        for (final ext in ['.jpg', '.png', '.webp', '.heic']) {
+           final remoteFile = File('${_convertedDir!.path}/$baseName$ext');
+           if (await remoteFile.exists()) {
+             await remoteFile.delete();
+           }
+        }
+      }
+    } catch (e) {
+      debugPrint("Error invalidating high-res cache on disk: $e");
     }
   }
 
@@ -419,7 +440,8 @@ class ThumbnailCache {
     }
   }
   
-  File _getFile(String id) {
+  File? _getFile(String id) {
+    if (_cacheDir == null) return null;
     // Sanitize ID for filename using Base64
     final safeId = base64Url.encode(utf8.encode(id));
     return File('${_cacheDir!.path}/$safeId');
@@ -464,7 +486,7 @@ class ThumbnailCache {
       // Try load from disk directly to memory
       // This bypasses the full 'getThumbnail' logic to just warm up RAM
       final file = _getFile(asset.id);
-      if (await file.exists()) {
+      if (file != null && await file.exists()) {
           try {
              final bytes = await file.readAsBytes();
              if (bytes.isNotEmpty) {
@@ -502,7 +524,7 @@ class ThumbnailCache {
         // Save to disk index
         if (bytes != null) {
           final file = _getFile(asset.id);
-          await _saveToDisk(file, bytes);
+          if (file != null) await _saveToDisk(file, bytes);
           // Note: we DO NOT put it in memory cache here. 
           // We want the memory cache reserved for what the user is actually looking at.
         }

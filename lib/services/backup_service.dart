@@ -613,6 +613,7 @@ class BackupService {
 
   Future<Uint8List?> fetchAndDecryptFromUrl(String url, SecureKey masterKey) async {
     try {
+      await _crypto.init();
       final uri = _resolveUri(url);
       final String originalAuthority = Uri.parse(url).authority;
 
@@ -670,6 +671,7 @@ class BackupService {
   }
 
   Future<bool> uploadFaceDatabase() async {
+      if (kIsWeb) return false;
       final session = await _auth.loadSession();
       if (session == null) return false;
       final userId = session['username'] as String;
@@ -784,23 +786,39 @@ class BackupService {
   }
 
   /// Updates the geographic location of specified cloud images.
-  Future<bool> updateCloudLocation(String userId, List<String> imageIds, double latitude, double longitude) async {
+  Future<bool> updateRemoteLocation(String userId, List<String> imageIds, double lat, double lng) async {
     try {
       final uri = Uri.parse('$_baseUrl/images/location?user_id=$userId');
-      final requestBody = jsonEncode({
-        'image_ids': imageIds,
-        'latitude': latitude,
-        'longitude': longitude,
-      });
-
       final response = await http.put(
         uri,
         headers: {'Content-Type': 'application/json'},
-        body: requestBody,
+        body: jsonEncode({
+          'image_ids': imageIds,
+          'latitude': lat,
+          'longitude': lng,
+        }),
       );
       return response.statusCode == 200;
     } catch (e) {
-      print('BackupService: Error updating cloud location: $e');
+      print('UpdateLocation Error: $e');
+      return false;
+    }
+  }
+
+  Future<bool> updateRemoteFavoriteStatus(String userId, List<String> imageIds, bool isFavorite) async {
+    try {
+      final uri = Uri.parse('$_baseUrl/images/favorite?user_id=$userId');
+      final response = await http.put(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'image_ids': imageIds,
+          'is_favorite': isFavorite,
+        }),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print('UpdateFavorite Error: $e');
       return false;
     }
   }
@@ -891,6 +909,10 @@ class BackupService {
     required Uint8List bytes,
     required String originalImageId,
     required bool isNewCopy,
+    double? latitude,
+    double? longitude,
+    String? album,
+    String? mimeType,
   }) async {
     try {
       final session = await _auth.loadSession();
@@ -948,10 +970,10 @@ class BackupService {
         'size': bytes.length,
         'checksum': checksum,
         'source_id': isNewCopy ? 'ninta_edit_$imageId' : 'ninta_update_$imageId',
-        'latitude': 0.0,
-        'longitude': 0.0,
-        'mime_type': 'image/jpeg',
-        'album': 'Edits',
+        'latitude': latitude ?? 0.0,
+        'longitude': longitude ?? 0.0,
+        'mime_type': mimeType ?? 'image/jpeg',
+        'album': album ?? (isNewCopy ? 'Edits' : ''),
         'is_deleted': false,
       });
 
@@ -997,6 +1019,7 @@ class BackupService {
   }
 
   Future<bool> downloadFaceDatabase({bool inMemoryOnly = false}) async {
+      if (kIsWeb) return false;
       final session = await _auth.loadSession();
       if (session == null) return false;
       final userId = session['username'] as String;

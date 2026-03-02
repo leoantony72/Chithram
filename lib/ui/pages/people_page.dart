@@ -19,6 +19,18 @@ import '../../services/auth_service.dart';
 import '../../services/backup_service.dart';
 import '../../services/crypto_service.dart';
 
+/// Tracks which sub-phase of the face-scan pipeline is currently active.
+enum ScanPhase {
+  idle,
+  initializing,
+  detecting,
+  embedding,
+  cloudScan,
+  clustering,
+  uploading,
+  training,
+}
+
 class PeoplePage extends StatefulWidget {
   const PeoplePage({super.key});
 
@@ -37,6 +49,12 @@ class _PeoplePageState extends State<PeoplePage> {
   bool _isTraining = false;
   double _trainingProgress = 0.0;
   String _statusMessage = '';
+
+  // Custom progress-bar state
+  ScanPhase _scanPhase = ScanPhase.idle;
+  double _phaseProgress = 0.0;
+  int _phaseCurrent = 0;
+  int _phaseTotal = 0;
 
   @override
   void initState() {
@@ -61,6 +79,10 @@ class _PeoplePageState extends State<PeoplePage> {
       debugPrint('Sync: Remote version ($remoteVersion) > Local ($localVersion). Downloading...');
       setState(() {
         _isScanning = true;
+        _scanPhase = ScanPhase.cloudScan;
+        _phaseProgress = 0;
+        _phaseCurrent = 0;
+        _phaseTotal = 0;
         _statusMessage = 'Syncing from Cloud...';
       });
       final success = await BackupService().downloadFaceDatabase(inMemoryOnly: kIsWeb);
@@ -69,6 +91,7 @@ class _PeoplePageState extends State<PeoplePage> {
       }
       setState(() {
         _isScanning = false;
+        _scanPhase = ScanPhase.idle;
         _statusMessage = success ? 'Sync Complete' : 'Sync Failed';
       });
     }
@@ -123,6 +146,10 @@ class _PeoplePageState extends State<PeoplePage> {
 
     setState(() {
       _isScanning = true;
+      _scanPhase = ScanPhase.initializing;
+      _phaseProgress = 0;
+      _phaseCurrent = 0;
+      _phaseTotal = 0;
       _statusMessage = 'Initializing...';
     });
 
@@ -163,23 +190,40 @@ class _PeoplePageState extends State<PeoplePage> {
        await _scanClusteringPhase();
     }
     
-    setState(() => _statusMessage = 'Uploading to Cloud...');
+    setState(() {
+      _scanPhase = ScanPhase.uploading;
+      _phaseProgress = 0;
+      _statusMessage = 'Uploading to Cloud...';
+    });
     final uploadSuccess = await BackupService().uploadFaceDatabase();
-    
+
     setState(() {
       _isScanning = false;
+      _scanPhase = ScanPhase.idle;
       _statusMessage = uploadSuccess ? 'Scan & Cloud Sync Complete' : 'Scan Complete (Upload Failed)';
     });
     _loadClusters();
   }
 
   Future<void> _scanClusteringPhase() async {
-    setState(() => _statusMessage = 'Phase 3: Clustering Faces...');
+    setState(() {
+      _scanPhase = ScanPhase.clustering;
+      _phaseProgress = 0;
+      _phaseCurrent = 0;
+      _phaseTotal = 0;
+      _statusMessage = 'Clustering Faces...';
+    });
     await _clusterService.runClustering();
   }
 
   Future<void> _scanCloudPhotos() async {
-    setState(() => _statusMessage = 'Fetching from Cloud...');
+    setState(() {
+      _scanPhase = ScanPhase.cloudScan;
+      _phaseProgress = 0;
+      _phaseCurrent = 0;
+      _phaseTotal = 0;
+      _statusMessage = 'Fetching from Cloud...';
+    });
     
     final auth = AuthService();
     final crypto = CryptoService();
@@ -280,41 +324,47 @@ class _PeoplePageState extends State<PeoplePage> {
   
   // Phase 1: Detect faces from new images and store BBoxes
   Future<void> _scanDetectionPhase() async {
-    setState(() => _statusMessage = 'Phase 1: Detecting Faces...');
-    
     // Fetch recent photos
     final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(type: RequestType.image);
     if (paths.isEmpty) return;
-    
-    final recentAlbum = paths[0]; 
+
+    final recentAlbum = paths[0];
     final int totalAssets = await recentAlbum.assetCountAsync;
-    
+
+    setState(() {
+      _scanPhase = ScanPhase.detecting;
+      _phaseProgress = 0;
+      _phaseCurrent = 0;
+      _phaseTotal = totalAssets;
+      _statusMessage = 'Detecting Faces...';
+    });
+
     // Process in pages of 50
-    const int pageSize = 50; 
+    const int pageSize = 50;
     int totalPages = (totalAssets / pageSize).ceil();
     int processedCount = 0;
 
     for (int page = 0; page < totalPages; page++) {
+      if (!mounted || !_isScanning) break;
+
+      final List<AssetEntity> entities = await recentAlbum.getAssetListPaged(page: page, size: pageSize);
+
+      const int concurrentBatchSize = 5;
+
+      for (var i = 0; i < entities.length; i += concurrentBatchSize) {
         if (!mounted || !_isScanning) break;
 
-        final List<AssetEntity> entities = await recentAlbum.getAssetListPaged(page: page, size: pageSize);
-        
-        // Process this page in smaller concurrent batches (e.g., 5 at a time)
-        // ML Kit might handle 5 concurrent requests okay. 
-        // Too many might cause memory pressure or native thread contention.
-        const int concurrentBatchSize = 5;
-        
-        for (var i = 0; i < entities.length; i += concurrentBatchSize) {
-            if (!mounted || !_isScanning) break;
+        final int end = min(i + concurrentBatchSize, entities.length);
+        final batch = entities.sublist(i, end);
 
-            final int end = min(i + concurrentBatchSize, entities.length);
-            final batch = entities.sublist(i, end);
-            
-            await Future.wait(batch.map((entity) => _processDetectionForEntity(entity)));
-            
-            processedCount += batch.length;
-            setState(() => _statusMessage = 'Detecting: $processedCount/$totalAssets');
-        }
+        await Future.wait(batch.map((entity) => _processDetectionForEntity(entity)));
+
+        processedCount += batch.length;
+        setState(() {
+          _phaseCurrent = processedCount;
+          _phaseProgress = totalAssets > 0 ? processedCount / totalAssets : 0;
+        });
+      }
     }
   }
 
@@ -354,51 +404,60 @@ class _PeoplePageState extends State<PeoplePage> {
     final faces = await _dbService.getFacesWithoutEmbedding();
     if (faces.isEmpty) return;
 
+    setState(() {
+      _scanPhase = ScanPhase.embedding;
+      _phaseProgress = 0;
+      _phaseCurrent = 0;
+      _phaseTotal = faces.length;
+      _statusMessage = 'Generating Embeddings...';
+    });
+
     for (var i = 0; i < faces.length; i++) {
-       final face = faces[i];
-       setState(() => _statusMessage = 'Embedding: ${i+1}/${faces.length}');
-       
-       final int faceId = face['id'];
-       final String path = face['image_path'];
-       final String bboxStr = face['bbox'];
-       final String? landmarksStr = face['landmarks'];
-       
-       final regex = RegExp(r'Rect.fromLTRB\(([^,]+), ([^,]+), ([^,]+), ([^)]+)\)');
-       final match = regex.firstMatch(bboxStr);
-       if (match == null) continue;
+      final face = faces[i];
+      setState(() {
+        _phaseCurrent = i + 1;
+        _phaseProgress = faces.isNotEmpty ? (i + 1) / faces.length : 0;
+      });
 
-       final rect = Rect.fromLTRB(
-          double.parse(match.group(1)!),
-          double.parse(match.group(2)!),
-          double.parse(match.group(3)!),
-          double.parse(match.group(4)!),
-       );
+      final int faceId = face['id'];
+      final String path = face['image_path'];
+      final String bboxStr = face['bbox'];
+      final String? landmarksStr = face['landmarks'];
 
-       Point<int>? leftEye;
-       Point<int>? rightEye;
-       if (landmarksStr != null) {
-          try {
-             final parts = landmarksStr.split(';');
-             if (parts.length == 2) {
-                final leParts = parts[0].split(',');
-                final reParts = parts[1].split(',');
-                leftEye = Point(int.parse(leParts[0]), int.parse(leParts[1]));
-                rightEye = Point(int.parse(reParts[0]), int.parse(reParts[1]));
-             }
-          } catch (_) {}
-       }
+      final regex = RegExp(r'Rect.fromLTRB\(([^,]+), ([^,]+), ([^,]+), ([^)]+)\)');
+      final match = regex.firstMatch(bboxStr);
+      if (match == null) continue;
 
-       try {
-         final data = await _faceService.getEmbeddingFromData(File(path), rect, leftEye: leftEye, rightEye: rightEye);
-         
-         if (data != null) {
-            final embeddingBytes = Float32List.fromList(data.embedding).buffer.asUint8List();
-            
-            await _dbService.updateFaceData(faceId, embeddingBytes, data.thumbnail);
-         }
-       } catch (e) {
-         print('Error embedding face $faceId: $e');
-       }
+      final rect = Rect.fromLTRB(
+        double.parse(match.group(1)!),
+        double.parse(match.group(2)!),
+        double.parse(match.group(3)!),
+        double.parse(match.group(4)!),
+      );
+
+      Point<int>? leftEye;
+      Point<int>? rightEye;
+      if (landmarksStr != null) {
+        try {
+          final parts = landmarksStr.split(';');
+          if (parts.length == 2) {
+            final leParts = parts[0].split(',');
+            final reParts = parts[1].split(',');
+            leftEye = Point(int.parse(leParts[0]), int.parse(leParts[1]));
+            rightEye = Point(int.parse(reParts[0]), int.parse(reParts[1]));
+          }
+        } catch (_) {}
+      }
+
+      try {
+        final data = await _faceService.getEmbeddingFromData(File(path), rect, leftEye: leftEye, rightEye: rightEye);
+        if (data != null) {
+          final embeddingBytes = Float32List.fromList(data.embedding).buffer.asUint8List();
+          await _dbService.updateFaceData(faceId, embeddingBytes, data.thumbnail);
+        }
+      } catch (e) {
+        print('Error embedding face $faceId: $e');
+      }
     }
   }
   @override
@@ -495,48 +554,68 @@ class _PeoplePageState extends State<PeoplePage> {
   }
 
   Future<void> _uploadDb() async {
-      setState(() => _isScanning = true);
-      setState(() => _statusMessage = 'Uploading DB to MinIO...');
-      final s = await BackupService().uploadFaceDatabase();
-      setState(() {
-         _statusMessage = s ? 'Backup Complete' : 'Backup Failed';
-         _isScanning = false;
-      });
+    setState(() {
+      _isScanning = true;
+      _scanPhase = ScanPhase.uploading;
+      _phaseProgress = 0;
+      _phaseCurrent = 0;
+      _phaseTotal = 0;
+      _statusMessage = 'Uploading to Cloud...';
+    });
+    final s = await BackupService().uploadFaceDatabase();
+    setState(() {
+      _statusMessage = s ? 'Backup Complete' : 'Backup Failed';
+      _isScanning = false;
+      _scanPhase = ScanPhase.idle;
+    });
   }
 
   Future<void> _downloadDb() async {
-      setState(() => _isScanning = true);
-      setState(() => _statusMessage = 'Downloading DB from MinIO...');
-      final s = await BackupService().downloadFaceDatabase(inMemoryOnly: kIsWeb);
-      
-      // Temporary Web logic, fully refresh local state from DB if written, or notify user.
-      setState(() {
-         _statusMessage = s ? 'Restore Complete' : 'Restore Failed';
-         _isScanning = false;
-      });
-      _loadClusters();
+    setState(() {
+      _isScanning = true;
+      _scanPhase = ScanPhase.cloudScan;
+      _phaseProgress = 0;
+      _phaseCurrent = 0;
+      _phaseTotal = 0;
+      _statusMessage = 'Restoring from Cloud...';
+    });
+    final s = await BackupService().downloadFaceDatabase(inMemoryOnly: kIsWeb);
+    setState(() {
+      _statusMessage = s ? 'Restore Complete' : 'Restore Failed';
+      _isScanning = false;
+      _scanPhase = ScanPhase.idle;
+    });
+    _loadClusters();
   }
 
   void _triggerTrain() {
-      setState(() {
-        _isTraining = true;
-        _trainingProgress = 0.0;
-        _statusMessage = 'Initializing Training...';
-      });
-      FederatedLearningService().trainAndUpload(onProgress: (p, s) {
-        if (mounted) {
-            setState(() {
-              if (p >= 0) _trainingProgress = p;
-              _statusMessage = s;
-            });
-        }
-      }).then((_) {
-        if (mounted) {
-            setState(() {
-              _isTraining = false;
-            });
-        }
-      });
+    setState(() {
+      _isTraining = true;
+      _scanPhase = ScanPhase.training;
+      _trainingProgress = 0.0;
+      _phaseProgress = 0.0;
+      _phaseCurrent = 0;
+      _phaseTotal = 0;
+      _statusMessage = 'Initializing Training...';
+    });
+    FederatedLearningService().trainAndUpload(onProgress: (p, s) {
+      if (mounted) {
+        setState(() {
+          if (p >= 0) {
+            _trainingProgress = p;
+            _phaseProgress = p;
+          }
+          _statusMessage = s;
+        });
+      }
+    }).then((_) {
+      if (mounted) {
+        setState(() {
+          _isTraining = false;
+          _scanPhase = ScanPhase.idle;
+        });
+      }
+    });
   }
 
   Future<void> _showCustomMenu(BuildContext context) async {
@@ -644,29 +723,33 @@ class _PeoplePageState extends State<PeoplePage> {
               onPressed: () => _showCustomMenu(context),
             ),
           ),
-          if (_isScanning || _isTraining)
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Text(_statusMessage, style: const TextStyle(fontSize: 12, color: Colors.amber)),
+          if (!_isScanning && !_isTraining && !kIsWeb)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: IconButton(
+                icon: const Icon(Icons.sync_rounded),
+                tooltip: 'Scan Local & Cloud Photos',
+                onPressed: _startScan,
               ),
-            )
-          else if (!kIsWeb)
-            IconButton(
-              icon: const Icon(Icons.sync_rounded),
-              tooltip: 'Scan Local & Cloud Photos',
-              onPressed: _startScan,
             ),
         ],
       ),
       body: Column(
         children: [
-          if (_isTraining)
-            LinearProgressIndicator(
-              value: _trainingProgress,
-              backgroundColor: Colors.white10,
-              valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
-            ),
+          // Custom animated scan / training progress banner
+          AnimatedSize(
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.easeInOut,
+            child: (_isScanning || _isTraining)
+                ? _ScanProgressBanner(
+                    phase: _scanPhase,
+                    progress: _isTraining ? _trainingProgress : _phaseProgress,
+                    current: _phaseCurrent,
+                    total: _phaseTotal,
+                    label: _statusMessage,
+                  )
+                : const SizedBox.shrink(),
+          ),
           Expanded(
             child: _clusters.isEmpty
                 ? Center(
@@ -852,3 +935,344 @@ class _MenuActionItem extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Custom Scan Progress Banner
+// ---------------------------------------------------------------------------
+
+class _ScanProgressBanner extends StatefulWidget {
+  final ScanPhase phase;
+  final double progress; // 0.0–1.0
+  final int current;
+  final int total;
+  final String label; // fallback label for indeterminate phases
+
+  const _ScanProgressBanner({
+    required this.phase,
+    required this.progress,
+    required this.current,
+    required this.total,
+    required this.label,
+  });
+
+  @override
+  State<_ScanProgressBanner> createState() => _ScanProgressBannerState();
+}
+
+class _ScanProgressBannerState extends State<_ScanProgressBanner>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _anim;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+    _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  // Which step pill is active: 0=Detect, 1=Embed, 2=Cluster, -1=Training
+  int get _activeStep {
+    switch (widget.phase) {
+      case ScanPhase.detecting:
+      case ScanPhase.initializing:
+        return 0;
+      case ScanPhase.embedding:
+      case ScanPhase.cloudScan:
+        return 1;
+      case ScanPhase.clustering:
+      case ScanPhase.uploading:
+        return 2;
+      case ScanPhase.training:
+        return -1;
+      default:
+        return 0;
+    }
+  }
+
+  bool get _isIndeterminate {
+    return widget.phase == ScanPhase.clustering ||
+        widget.phase == ScanPhase.uploading ||
+        widget.phase == ScanPhase.cloudScan ||
+        widget.phase == ScanPhase.initializing ||
+        widget.phase == ScanPhase.training;
+  }
+
+  String get _counterLabel {
+    switch (widget.phase) {
+      case ScanPhase.detecting:
+        return widget.total > 0
+            ? '${widget.current} / ${widget.total} photos'
+            : 'Scanning photos...';
+      case ScanPhase.embedding:
+        return widget.total > 0
+            ? '${widget.current} / ${widget.total} faces'
+            : 'Generating embeddings...';
+      default:
+        return widget.label.isNotEmpty ? widget.label : 'Processing...';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const steps = ['Detect', 'Embed', 'Cluster'];
+    final activeStep = _activeStep;
+    final isTraining = widget.phase == ScanPhase.training;
+
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (context, _) {
+        return Container(
+          margin: const EdgeInsets.fromLTRB(14, 6, 14, 4),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            color: Colors.white.withOpacity(0.05),
+            border: Border.all(color: Colors.white.withOpacity(0.09), width: 0.8),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF7B2FFF)
+                    .withOpacity(0.10 + 0.07 * _anim.value),
+                blurRadius: 28,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── Phase pills (hidden during training) ──
+              if (!isTraining) ...([
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(steps.length, (i) {
+                    final isActive = i == activeStep;
+                    final isDone = i < activeStep;
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 350),
+                        curve: Curves.easeOut,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 13, vertical: 5),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          gradient: isActive
+                              ? const LinearGradient(
+                                  colors: [Color(0xFF7B2FFF), Color(0xFF00C9FF)],
+                                )
+                              : null,
+                          color: isActive
+                              ? null
+                              : (isDone
+                                  ? Colors.white.withOpacity(0.12)
+                                  : Colors.white.withOpacity(0.04)),
+                          border: Border.all(
+                            color: isActive
+                                ? Colors.transparent
+                                : Colors.white
+                                    .withOpacity(isDone ? 0.18 : 0.07),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (isDone)
+                              const Padding(
+                                padding: EdgeInsets.only(right: 4),
+                                child: Icon(Icons.check_rounded,
+                                    size: 11, color: Colors.white),
+                              ),
+                            Text(
+                              steps[i],
+                              style: TextStyle(
+                                color: isActive || isDone
+                                    ? Colors.white
+                                    : Colors.white38,
+                                fontSize: 11.5,
+                                fontWeight: isActive
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+                const SizedBox(height: 12),
+              ]),
+
+              if (isTraining) ...([
+                Row(
+                  children: [
+                    const Icon(Icons.model_training_rounded,
+                        size: 14, color: Color(0xFF00C9FF)),
+                    const SizedBox(width: 6),
+                    Text(
+                      'AI Training',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.7),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+              ]),
+
+              // ── Glow progress bar ──
+              SizedBox(
+                height: 6,
+                width: double.infinity,
+                child: CustomPaint(
+                  painter: _GlowBarPainter(
+                    progress: _isIndeterminate ? null : widget.progress,
+                    pulseValue: _anim.value,
+                    isTraining: isTraining,
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 9),
+
+              // ── Counter / label ──
+              Text(
+                _counterLabel,
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.55),
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w400,
+                  letterSpacing: 0.15,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Glow Progress Bar CustomPainter
+// ---------------------------------------------------------------------------
+
+class _GlowBarPainter extends CustomPainter {
+  /// null → indeterminate (shimmer pill)
+  final double? progress;
+  final double pulseValue; // 0→1 repeating from AnimationController
+  final bool isTraining;
+
+  const _GlowBarPainter({
+    required this.progress,
+    required this.pulseValue,
+    this.isTraining = false,
+  });
+
+  static const _gradientColors = [
+    Color(0xFF7B2FFF),
+    Color(0xFF00C9FF),
+    Color(0xFF00E5CC),
+  ];
+
+  static const _trainingColors = [
+    Color(0xFF1565C0),
+    Color(0xFF42A5F5),
+    Color(0xFF00E5FF),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const rr = Radius.circular(3);
+    final trackRRect =
+        RRect.fromRectAndRadius(Rect.fromLTWH(0, 0, size.width, size.height), rr);
+
+    // Dark track
+    canvas.drawRRect(
+      trackRRect,
+      Paint()..color = Colors.white.withOpacity(0.09),
+    );
+
+    final colors = isTraining ? _trainingColors : _gradientColors;
+
+    if (progress != null) {
+      // ── Determinate fill ──
+      final fillW =
+          (size.width * progress!.clamp(0.0, 1.0)).clamp(6.0, size.width);
+      final fillRRect = RRect.fromRectAndRadius(
+          Rect.fromLTWH(0, 0, fillW, size.height), rr);
+
+      canvas.drawRRect(
+        fillRRect,
+        Paint()
+          ..shader = LinearGradient(colors: colors)
+              .createShader(Rect.fromLTWH(0, 0, size.width, size.height)),
+      );
+
+      // Leading glow dot
+      if (progress! > 0.01) {
+        canvas.drawCircle(
+          Offset(fillW, size.height / 2),
+          size.height * 1.4,
+          Paint()
+            ..color = colors.last
+                .withOpacity(0.45 + 0.35 * pulseValue)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+        );
+        // Bright core dot
+        canvas.drawCircle(
+          Offset(fillW, size.height / 2),
+          size.height * 0.55,
+          Paint()..color = Colors.white.withOpacity(0.9),
+        );
+      }
+    } else {
+      // ── Indeterminate shimmer pill ──
+      const pillFraction = 0.32;
+      // Center travels from -pillFraction/2 → 1 + pillFraction/2
+      final center =
+          -pillFraction / 2 + pulseValue * (1.0 + pillFraction);
+      final left = ((center - pillFraction / 2) * size.width)
+          .clamp(0.0, size.width);
+      final right = ((center + pillFraction / 2) * size.width)
+          .clamp(0.0, size.width);
+
+      if (right > left) {
+        final shimmerRRect = RRect.fromRectAndRadius(
+            Rect.fromLTRB(left, 0, right, size.height), rr);
+
+        canvas.drawRRect(
+          shimmerRRect,
+          Paint()
+            ..shader = LinearGradient(
+              colors: [
+                colors[0].withOpacity(0),
+                colors[1],
+                colors[2].withOpacity(0),
+              ],
+            ).createShader(Rect.fromLTRB(left, 0, right, size.height)),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_GlowBarPainter old) =>
+      old.progress != progress ||
+      old.pulseValue != pulseValue ||
+      old.isTraining != isTraining;
+}

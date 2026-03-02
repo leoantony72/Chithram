@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 import 'package:sodium_libs/sodium_libs_sumo.dart';
 import 'api_config.dart';
 import 'auth_service.dart';
@@ -45,6 +46,20 @@ class ShareService {
   ShareService._internal();
 
   String get _baseUrl => ApiConfig().baseUrl;
+  
+  Uri _resolveUri(String url) {
+    Uri uri = Uri.parse(url);
+    if (kIsWeb) return uri;
+    
+    if ((uri.host == '127.0.0.1' || uri.host == 'localhost')) {
+       final base = _baseUrl;
+       final baseUri = Uri.parse(base);
+       if (baseUri.host != 'localhost' && baseUri.host != '127.0.0.1') {
+          return uri.replace(host: baseUri.host);
+       }
+    }
+    return uri;
+  }
 
   /// Search usernames by prefix (for autocomplete)
   Future<List<String>> searchUsers(String query, {String? excludeUsername}) async {
@@ -87,6 +102,8 @@ class ShareService {
     required String imageId,
     required String shareType,
     required Uint8List imageBytes,
+    int? width,
+    int? height,
   }) async {
     final session = await AuthService().loadSession();
     if (session == null) return null;
@@ -118,6 +135,8 @@ class ShareService {
         'share_type': shareType,
         'encrypted_share_key': base64Encode(encryptedShareKey),
         'sender_public_key': base64Encode(sessionPk),
+        'width': width,
+        'height': height,
       });
 
       final createResp = await http.post(
@@ -146,9 +165,16 @@ class ShareService {
       if (uploadUrl == null) return null;
 
       final encryptedPayload = Uint8List.fromList([...encryptedImage.nonce, ...encryptedImage.cipherText]);
+      final uri = _resolveUri(uploadUrl);
+      final String originalAuthority = Uri.parse(uploadUrl).authority;
+
       final uploadResp = await http.put(
-        Uri.parse(uploadUrl),
-        headers: {'Content-Type': 'application/octet-stream'},
+        uri,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': encryptedPayload.length.toString(),
+          'Host': originalAuthority, // Critical for MinIO signature validation
+        },
         body: encryptedPayload,
       );
 
@@ -221,8 +247,8 @@ class ShareService {
           createdAt: DateTime.tryParse(m['created_at'] ?? '') ?? DateTime.now(),
           viewedAt: m['viewed_at'] != null ? DateTime.tryParse(m['viewed_at']) : null,
           senderUsername: m['sender_id'],
-          width: 0,
-          height: 0,
+          width: m['width'] ?? 0,
+          height: m['height'] ?? 0,
           mimeType: 'image/jpeg',
         );
       }).toList();
@@ -233,23 +259,57 @@ class ShareService {
   }
 
   /// Fetch and decrypt a shared image
-  Future<Uint8List?> fetchSharedImage(String shareId) async {
+  Future<Uint8List?> fetchSharedImage(String shareId, {String? imageId, String? senderId}) async {
     final session = await AuthService().loadSession();
     if (session == null) return null;
 
     final userId = session['username'] as String;
-    final masterKeyBytes = session['masterKey'] as Uint8List;
     final privateKeyBytes = session['privateKey'] as Uint8List?;
     final publicKeyBytes = session['publicKey'] as Uint8List?;
 
     if (privateKeyBytes == null || publicKeyBytes == null) return null;
 
     try {
+      // If we already know the sender and it's us, we can skip the metadata fetch
+      // which often 404s on the backend because of permission checks (sender can't fetch share meta)
+      if (senderId == userId && imageId != null) {
+         print('ShareService: User is sender (bypass), using library fallback for share $shareId');
+         await CryptoService().init();
+         final remote = await BackupService().fetchSingleRemoteImage(userId, imageId);
+         if (remote != null) {
+            final masterKeyBytes = session['masterKey'] as Uint8List;
+            final key = SecureKey.fromList(CryptoService().sodium, masterKeyBytes);
+            return BackupService().fetchAndDecryptFromUrl(remote.originalUrl, key);
+         }
+         return null;
+      }
+
       // 1. Get share metadata (encrypted_share_key, sender_public_key)
-      final metaResp = await http.get(Uri.parse('$_baseUrl/shares/$shareId?user_id=$userId'));
-      if (metaResp.statusCode != 200) return null;
+      final metaUri = Uri.parse('$_baseUrl/shares/$shareId?user_id=$userId');
+      final metaResp = await http.get(metaUri);
+      if (metaResp.statusCode != 200) {
+        print('ShareService: Metadata fetch failed: ${metaResp.statusCode} for $metaUri');
+        return null;
+      }
 
       final meta = jsonDecode(metaResp.body);
+      final actualSenderId = meta['sender_id'] as String?;
+      final actualImageId = meta['image_id'] as String?;
+      
+      if (actualSenderId == userId) {
+         print('ShareService: User is sender (meta), using library fallback for share $shareId');
+         if (actualImageId == null || actualImageId.isEmpty) return null;
+         
+         final remote = await BackupService().fetchSingleRemoteImage(userId, actualImageId);
+         if (remote != null) {
+            await CryptoService().init();
+            final masterKeyBytes = session['masterKey'] as Uint8List;
+            final key = SecureKey.fromList(CryptoService().sodium, masterKeyBytes);
+            return BackupService().fetchAndDecryptFromUrl(remote.originalUrl, key);
+         }
+         return null;
+      }
+
       final encShareKeyB64 = meta['encrypted_share_key'] as String?;
       final senderPkB64 = meta['sender_public_key'] as String?;
 
@@ -269,15 +329,33 @@ class ShareService {
       final shareKey = crypto.unsealFromSender(encShareKey, ourPk, ourSk);
 
       // 2. Get download URL
-      final urlResp = await http.get(Uri.parse('$_baseUrl/shares/$shareId/download-url?user_id=$userId'));
-      if (urlResp.statusCode != 200) return null;
+      final urlUri = Uri.parse('$_baseUrl/shares/$shareId/download-url?user_id=$userId');
+      final urlResp = await http.get(urlUri);
+      if (urlResp.statusCode != 200) {
+        print('ShareService: Download URL fetch failed: ${urlResp.statusCode} for $urlUri');
+        return null;
+      }
 
       final downloadUrl = jsonDecode(urlResp.body)['download_url'] as String?;
       if (downloadUrl == null) return null;
 
       // 3. Fetch encrypted image
-      final imageResp = await http.get(Uri.parse(downloadUrl));
-      if (imageResp.statusCode != 200) return null;
+      final uri = _resolveUri(downloadUrl);
+      final String originalAuthority = Uri.parse(downloadUrl).authority;
+
+      print('ShareService: Fetching encrypted image from ${uri.host}...');
+      final imageResp = await http.get(
+        uri,
+        headers: {
+          'Host': originalAuthority, // Critical for MinIO signature validation
+        },
+      );
+      if (imageResp.statusCode != 200) {
+        print('ShareService: Image download failed: ${imageResp.statusCode} for $uri');
+        return null;
+      }
+      
+      print('ShareService: Image downloaded, decrypting...');
 
       final encryptedBytes = imageResp.bodyBytes;
       final nonceLen = crypto.sodium.crypto.secretBox.nonceBytes;

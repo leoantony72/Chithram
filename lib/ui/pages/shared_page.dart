@@ -194,7 +194,11 @@ class _SharedPageState extends State<SharedPage> with SingleTickerProviderStateM
       return;
     }
 
-    final bytes = await ShareService().fetchSharedImage(share.id);
+    final bytes = await ShareService().fetchSharedImage(
+      share.id, 
+      imageId: share.imageId, 
+      senderId: share.senderId
+    );
     if (!mounted) return;
     if (bytes == null || bytes.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -221,7 +225,8 @@ class _SharedPageState extends State<SharedPage> with SingleTickerProviderStateM
   Future<void> _revokeShare(ShareItem share) async {
     final ok = await showModalBottomSheet<bool>(
       context: context,
-      backgroundColor: Colors.black,
+      backgroundColor: Colors.transparent,
+      useRootNavigator: true,
       builder: (ctx) => _RevokeSheet(
         onRevoke: () => Navigator.pop(ctx, true), 
         onCancel: () => Navigator.pop(ctx, false)
@@ -302,7 +307,11 @@ class _ShareCardState extends State<_ShareCard> {
   Future<void> _loadThumbnail() async {
     if (_thumbLoading) return;
     _thumbLoading = true;
-    final bytes = await ShareService().fetchSharedImage(widget.share.id);
+    final bytes = await ShareService().fetchSharedImage(
+      widget.share.id,
+      imageId: widget.share.imageId,
+      senderId: widget.share.senderId
+    );
     if (mounted && bytes != null && bytes.isNotEmpty) {
       setState(() => _thumbnailBytes = bytes);
     }
@@ -461,12 +470,17 @@ class _RevokeSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 60),
-      color: Colors.black,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+      decoration: const BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: SafeArea(
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(40, 48, 40, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
           const Text(
             'REVOKE SHARE?',
             style: TextStyle(
@@ -517,8 +531,10 @@ class _RevokeSheet extends StatelessWidget {
               ),
             ],
           ),
-        ],
+          ],
+        ),
       ),
+    ),
     );
   }
 }

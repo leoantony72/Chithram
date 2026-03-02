@@ -156,6 +156,10 @@ final GoRouter _router = GoRouter(
             asset: extra['asset'] as AssetEntity?,
             file: extra['file'] as File?,
             remoteImageId: extra['remoteImageId'] as String?,
+            latitude: (extra['latitude'] as num?)?.toDouble(),
+            longitude: (extra['longitude'] as num?)?.toDouble(),
+            album: extra['album'] as String?,
+            mimeType: extra['mimeType'] as String?,
           );
         }
         throw Exception("Invalid argument for /edit: $extra");

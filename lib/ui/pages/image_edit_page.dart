@@ -17,7 +17,21 @@ class ImageEditPage extends StatefulWidget {
   final AssetEntity? asset;
   final File? file;
   final String? remoteImageId;
-  const ImageEditPage({super.key, this.asset, this.file, this.remoteImageId});
+  final double? latitude;
+  final double? longitude;
+  final String? album;
+  final String? mimeType;
+
+  const ImageEditPage({
+    super.key, 
+    this.asset, 
+    this.file, 
+    this.remoteImageId,
+    this.latitude,
+    this.longitude,
+    this.album,
+    this.mimeType,
+  });
 
   @override
   State<ImageEditPage> createState() => _ImageEditPageState();
@@ -107,10 +121,10 @@ class _ImageEditPageState extends State<ImageEditPage> {
 
       if (editedBytes.isEmpty) throw Exception("Failed to process image.");
 
+      AssetEntity? savedAsset;
       if (Platform.isWindows) {
         // --- Windows Specific Saving ---
         File? sourceFile = _imageFile;
-        // If we have an asset, try to get its original file for overwriting
         if (overwrite && widget.asset != null) {
            sourceFile = await widget.asset!.file;
         }
@@ -124,10 +138,8 @@ class _ImageEditPageState extends State<ImageEditPage> {
           targetPath = sourceFile.path;
           await sourceFile.writeAsBytes(editedBytes);
         } else {
-          // Saving a copy OR saving a temporary file (remote-originated)
           Directory? baseDir;
           if (isTemp || Platform.isWindows) {
-             // For Windows, default to a visible "Ninta" folder in Pictures if possible
              final userProfile = Platform.environment['USERPROFILE'];
              if (userProfile != null) {
                final pictures = Directory(p.join(userProfile, 'Pictures', 'Ninta'));
@@ -147,41 +159,23 @@ class _ImageEditPageState extends State<ImageEditPage> {
           
           await File(targetPath).writeAsBytes(editedBytes);
         }
-
-        // --- Cloud Sync ---
-        try {
-          final String? rid = widget.remoteImageId ?? (widget.asset?.id.startsWith('cloud_') == true ? widget.asset!.id.substring(6) : null);
-          if (rid != null) {
-            await BackupService().uploadEditedImage(
-              bytes: editedBytes,
-              originalImageId: rid,
-              isNewCopy: !overwrite,
-            );
-          }
-        } catch (e) {
-          debugPrint("Cloud Sync Error: $e");
-          // Non-fatal, image is still saved locally
-        }
-        
-        // Invalidate thumbnail cache if overwriting
-        if (overwrite && widget.asset != null) {
-          await ThumbnailCache().invalidate(widget.asset!.id);
-        }
-        
-        // Refresh provider to pick up changes
-        final provider = Provider.of<PhotoProvider>(context, listen: false);
-        await provider.fetchAssets(force: true);
       } else {
         // --- Mobile Specific Saving (PhotoManager) ---
-        AssetEntity? savedAsset;
         if (overwrite && widget.asset != null) {
+          // On Android 10+, Overwrite requires a delete + save or specialized Android 11 API usage.
+          // For now, we save first, then attempt delete to avoid data loss.
           savedAsset = await PhotoManager.editor.saveImage(
             editedBytes,
             title: widget.asset!.title ?? 'edited_${const Uuid().v4()}',
             filename: 'edited_${const Uuid().v4()}.jpg',
           );
           if (savedAsset != null) {
-            await PhotoManager.editor.deleteWithIds([widget.asset!.id]);
+            try {
+              // Note: On Android 11+, this might trigger a system prompt for permission to delete.
+              await PhotoManager.editor.deleteWithIds([widget.asset!.id]);
+            } catch (e) {
+              debugPrint("Mobile: Failed to delete original after save: $e");
+            }
           }
         } else {
           final title = widget.asset?.title ?? 'edited_${const Uuid().v4().substring(0,8)}';
@@ -193,41 +187,68 @@ class _ImageEditPageState extends State<ImageEditPage> {
         }
 
         if (savedAsset == null) {
-           throw Exception("Failed to save edited image.");
+           throw Exception("Failed to save edited image to gallery.");
         }
+      }
 
-        // --- Cloud Sync (Mobile) ---
-        try {
-          final String? rid = widget.remoteImageId ?? (widget.asset?.id.startsWith('cloud_') == true ? widget.asset!.id.substring(6) : null);
-          if (rid != null) {
-            await BackupService().uploadEditedImage(
-              bytes: editedBytes,
-              originalImageId: rid,
-              isNewCopy: !overwrite,
-            );
-          }
-        } catch (e) {
-          debugPrint("Cloud Sync Error (Mobile): $e");
+      // --- Common Post-Save Logic ---
+      
+      // 1. Cloud Sync
+      try {
+        final String? rid = widget.remoteImageId ?? (widget.asset?.id.startsWith('cloud_') == true ? widget.asset!.id.substring(6) : null);
+        if (rid != null) {
+          await BackupService().uploadEditedImage(
+            bytes: editedBytes,
+            originalImageId: rid,
+            isNewCopy: !overwrite,
+            latitude: widget.latitude,
+            longitude: widget.longitude,
+            album: widget.album,
+            mimeType: widget.mimeType,
+          );
         }
+      } catch (e) {
+        debugPrint("Cloud Sync Error: $e");
+      }
 
-        // Invalidate thumbnail cache if overwriting
-        if (overwrite && widget.asset != null) {
-          await ThumbnailCache().invalidate(widget.asset!.id);
+      // 2. Cache Invalidation
+      if (overwrite && widget.asset != null) {
+        await ThumbnailCache().invalidate(widget.asset!.id);
+      }
+
+      // 3. UI Global Refresh (CRITICAL: Required for both Mobile & Windows to see the new/updated file)
+      final provider = Provider.of<PhotoProvider>(context, listen: false);
+      
+      bool isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+      
+      if (isMobile) {
+        // Mobile: Use our new instant injection to avoid the "empty library" during background sync
+        if (savedAsset != null) {
+          await provider.addAssetInstantly(
+            savedAsset, 
+            replaceId: overwrite ? widget.asset?.id : null
+          );
+        } else {
+          // Fallback if something went wrong with the savedAsset reference
+          await provider.fetchAssets(force: true);
         }
-
-        if (mounted) {
-           ScaffoldMessenger.of(context).showSnackBar(
-             const SnackBar(
-               content: Text("Image saved to gallery"),
-               behavior: SnackBarBehavior.floating,
-               backgroundColor: Color(0xFF1A1A1A),
-             ),
-           );
+      } else {
+        // Windows/Web/Desktop: Use the standard re-scan/refresh
+        await provider.fetchAssets(force: true);
+        if (widget.asset != null) {
+          provider.forceReloadThumbnail(widget.asset!.id);
         }
       }
 
       if (mounted) {
-        Navigator.pop(context, true);
+         ScaffoldMessenger.of(context).showSnackBar(
+           const SnackBar(
+             content: Text("Image saved successfully"),
+             behavior: SnackBarBehavior.floating,
+             backgroundColor: Color(0xFF1A1A1A),
+           ),
+         );
+         Navigator.pop(context, true);
       }
     } catch (e) {
       debugPrint("Error saving edited image: $e");

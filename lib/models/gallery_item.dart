@@ -8,10 +8,21 @@ class GalleryItem {
   final AssetEntity? local;
   final RemoteImage? remote;
 
+  final int version; // <--- Tracks manual refreshes/edits
   bool? _localFavoriteOverride;
   
-  GalleryItem.local(this.local, {bool? isFavorite}) : type = GalleryItemType.local, remote = null, _localFavoriteOverride = isFavorite;
-  GalleryItem.remote(this.remote) : type = GalleryItemType.remote, local = null;
+  GalleryItem.local(this.local, {bool? isFavorite, this.version = 0}) : type = GalleryItemType.local, remote = null, _localFavoriteOverride = isFavorite;
+  GalleryItem.remote(this.remote, {this.version = 0}) : type = GalleryItemType.remote, local = null, _localFavoriteOverride = null;
+
+  GalleryItem copyWith({int? version, bool? isFavorite}) {
+     if (type == GalleryItemType.local) {
+        return GalleryItem.local(local, isFavorite: isFavorite ?? _localFavoriteOverride, version: version ?? this.version);
+     } else {
+        final newItem = GalleryItem.remote(remote, version: version ?? this.version);
+        if (isFavorite != null) newItem.isFavorite = isFavorite;
+        return newItem;
+     }
+  }
 
   String get id => type == GalleryItemType.local ? local!.id : remote!.imageId;
   

@@ -120,14 +120,47 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
   void didUpdateWidget(ThumbnailWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     final currentId = _effectiveItem.id;
+    final oldEntity = oldWidget.item?.local ?? oldWidget.entity;
     final oldId = oldWidget.item?.id ?? oldWidget.entity?.id;
     
-    if (currentId != oldId || widget.isHighRes != oldWidget.isHighRes) {
+    // Local mod check
+    final currentModLocal = _effectiveItem.local?.modifiedDateSecond;
+    final oldModLocal = oldEntity?.modifiedDateSecond;
+    
+    // Remote mod check
+    final currentModRemote = _effectiveItem.remote?.modifiedAt;
+    final oldModRemote = oldWidget.item?.remote?.modifiedAt;
+
+    final idChanged = currentId != oldId;
+    final resChanged = widget.isHighRes != oldWidget.isHighRes;
+    
+    // Explicit edit version check (manual trigger)
+    final versionChanged = widget.item != null && oldWidget.item != null && widget.item!.version != oldWidget.item!.version;
+
+    bool modChanged = false;
+    if (currentModLocal != null && oldModLocal != null && currentModLocal != oldModLocal) {
+      modChanged = true;
+    } else if (currentModRemote != null && oldModRemote != null && !currentModRemote.isAtSameMomentAs(oldModRemote)) {
+      modChanged = true;
+    }
+
+    if (idChanged || resChanged || modChanged || versionChanged) {
        _timer?.cancel();
        _loadTimer?.cancel();
-       _originFile = null;
        
-       if (currentId != oldId) {
+       if ((modChanged || versionChanged) && _originFile != null) {
+          // Force evict from Flutter's internal ImageCache if the file at the same path/ID changed
+          FileImage(_originFile!).evict();
+       }
+       if ((modChanged || versionChanged) && _bytes != null) {
+          // If we had memory bytes, evict them from the global cache too
+          PaintingBinding.instance.imageCache.evict(MemoryImage(_bytes!));
+       }
+
+       _originFile = null;
+       _isLoading = false; 
+       
+       if (idChanged || modChanged) {
           _bytes = ThumbnailCache().getMemory(currentId);
        }
 
@@ -266,7 +299,7 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
 
         // Use high-res source for cards (Journeys, etc)
         if (widget.isHighRes) {
-            final isWindowsOrLinux = Platform.isWindows || Platform.isLinux;
+            final isWindowsOrLinux = !kIsWeb && (Platform.isWindows || Platform.isLinux);
             final isHeicOriginal = remote.mimeType.contains('heic') || remote.mimeType.contains('heif');
             
             if (isWindowsOrLinux && isHeicOriginal) {
@@ -306,6 +339,7 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
                // Windows HEIC fix: image package cannot decode HEIC. If conversion failed,
                // fall back to thumb1024 or thumb256 (JPEG) and save as cover.
                if (cachedFile == null &&
+                   !kIsWeb &&
                    (Platform.isWindows || Platform.isLinux) &&
                    (remote.mimeType.contains('heic') || remote.mimeType.contains('heif'))) {
                   debugPrint("ThumbnailWidget: HEIC conversion failed on Windows. Using JPEG thumbnail fallback.");
@@ -327,7 +361,7 @@ class _ThumbnailWidgetState extends State<ThumbnailWidget> {
                   return;
                }
                // If we still have no file but have HEIC bytes, don't use Image.memory(heic) - it fails on Windows
-               if ((Platform.isWindows || Platform.isLinux) &&
+               if (!kIsWeb && (Platform.isWindows || Platform.isLinux) &&
                    (remote.mimeType.contains('heic') || remote.mimeType.contains('heif'))) {
                   // Already tried fallback above; if we're here, fallback also failed - show placeholder
                   setState(() => _bytes = null);

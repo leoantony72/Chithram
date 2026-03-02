@@ -67,10 +67,11 @@ func main() {
 	r.DELETE("/images", controllers.DeleteImages)
 	r.PUT("/images/location", controllers.UpdateImageLocation)
 	r.PUT("/images/album", controllers.UpdateImageAlbum)
+	r.PUT("/images/favorite", controllers.UpdateImageFavorite)
 	r.GET("/albums", controllers.GetAlbums)
 	r.GET("/images", controllers.ListImages)
 	r.GET("/images/:id", controllers.GetSingleImage)
-	r.POST("/images/register", controllers.RegisterImage)
+	r.POST("/images/register", controllers.RegisterOrUpdateImage)
 	r.POST("/images/upload_urls", controllers.GenerateUploadURLs)
 	r.GET("/images/checksums", controllers.GetChecksums)  // Add this
 	r.GET("/images/source_ids", controllers.GetSourceIDs) // Add this for fast deduplication

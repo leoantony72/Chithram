@@ -3,7 +3,6 @@ import 'dart:math' show sqrt;
 import 'dart:typed_data';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 import 'package:path/path.dart';
 import 'package:flutter/foundation.dart';
 
@@ -15,16 +14,17 @@ class DatabaseService {
   DatabaseService._internal();
 
   Future<Database> get database async {
+    // Web has no persistent SQLite — callers should guard with kIsWeb before
+    // calling this getter. If they do reach here on web, return null-safe.
+    if (kIsWeb) throw UnsupportedError('DatabaseService: not available on web.');
     if (_database != null) return _database!;
     _database = await _initDatabase();
     return _database!;
   }
 
   Future<Database> _initDatabase() async {
-    String path = 'chithram_faces.db';
-    if (kIsWeb) {
-      databaseFactory = databaseFactoryFfiWeb;
-    } else if (Platform.isWindows || Platform.isLinux) {
+    String path;
+    if (Platform.isWindows || Platform.isLinux) {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
       final dbPath = await getDatabasesPath();
@@ -196,6 +196,7 @@ class DatabaseService {
 
   // --- Local Gallery Index ---
   Future<void> saveGalleryIndex(List<Map<String, dynamic>> items) async {
+    if (kIsWeb) return;
     final db = await database;
     Batch batch = db.batch();
     for (var item in items) {
@@ -205,6 +206,7 @@ class DatabaseService {
   }
 
   Future<void> updateFavoriteStatus(String id, bool isFavorite) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.update(
       'local_gallery_index',
@@ -219,13 +221,21 @@ class DatabaseService {
     await db.delete('local_gallery_index');
   }
 
+  Future<void> deleteFromGalleryIndex(String id) async {
+    if (kIsWeb) return;
+    final db = await database;
+    await db.delete('local_gallery_index', where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<Set<String>> getFavoritesIds() async {
+    if (kIsWeb) return {};
     final db = await database;
     final res = await db.query('local_gallery_index', columns: ['id'], where: 'is_favorite = 1');
     return res.map((e) => e['id'] as String).toSet();
   }
 
   Future<List<Map<String, dynamic>>> getGalleryIndex({int limit = 500, int offset = 0}) async {
+    if (kIsWeb) return [];
     final db = await database;
     return await db.query(
        'local_gallery_index', 
@@ -236,6 +246,7 @@ class DatabaseService {
   }
 
   Future<int> getGalleryIndexCount() async {
+    if (kIsWeb) return 0;
     final db = await database;
     final result = await db.rawQuery('SELECT COUNT(*) as count FROM local_gallery_index');
     return Sqflite.firstIntValue(result) ?? 0;
@@ -244,11 +255,13 @@ class DatabaseService {
   // --- Backup Operations ---
 
   Future<void> setBackupSetting(String key, String value) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.insert('backup_settings', {'key': key, 'value': value}, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<String?> getBackupSetting(String key) async {
+    if (kIsWeb) return null;
     final db = await database;
     final res = await db.query('backup_settings', where: 'key = ?', whereArgs: [key]);
     if (res.isNotEmpty) return res.first['value'] as String;
@@ -256,6 +269,7 @@ class DatabaseService {
   }
 
   Future<void> logBackupStatus(String path, String status) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.insert(
       'backup_log', 
@@ -265,6 +279,7 @@ class DatabaseService {
   }
 
   Future<bool> isBackedUp(String path) async {
+    if (kIsWeb) return false;
     final db = await database;
     final res = await db.query('backup_log', where: 'file_path = ? AND status = ?', whereArgs: [path, 'UPLOADED']);
     return res.isNotEmpty;
@@ -272,11 +287,13 @@ class DatabaseService {
 
   // --- Journey Covers ---
   Future<void> setJourneyCover(String city, String imageId) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.insert('journey_covers', {'city': city, 'image_id': imageId}, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<String?> getJourneyCover(String city) async {
+    if (kIsWeb) return null;
     final db = await database;
     final res = await db.query('journey_covers', where: 'city = ?', whereArgs: [city]);
     if (res.isNotEmpty) return res.first['image_id'] as String;
@@ -285,6 +302,7 @@ class DatabaseService {
 
   // --- Journey Cache ---
   Future<void> saveJourneyCache(String jsonData) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.insert('journey_cache', {
       'id': 'main',
@@ -294,6 +312,7 @@ class DatabaseService {
   }
 
   Future<Map<String, dynamic>?> getJourneyCache() async {
+    if (kIsWeb) return null;
     final db = await database;
     final res = await db.query('journey_cache', where: 'id = ?', whereArgs: ['main']);
     if (res.isNotEmpty) {
@@ -311,6 +330,7 @@ class DatabaseService {
   }
 
   Future<void> invalidateJourneyCache() async {
+    if (kIsWeb) return;
     final db = await database;
     await db.delete('journey_cache', where: 'id = ?', whereArgs: ['main']);
   }
@@ -318,6 +338,7 @@ class DatabaseService {
   // --- Face Operations ---
 
   Future<void> markImageAsProcessed(String imagePath) async {
+    if (kIsWeb) return;
     final db = await database;
     try {
       await db.insert(
@@ -329,6 +350,7 @@ class DatabaseService {
   }
 
   Future<bool> isImageProcessed(String imagePath) async {
+    if (kIsWeb) return true; // pretend processed so web never tries to scan
     final db = await database;
     
     // Check processed_images table
@@ -352,6 +374,7 @@ class DatabaseService {
   }
 
   Future<int> insertFace(String imagePath, String bbox, String? landmarks, Uint8List? embedding, Uint8List? thumbnail) async {
+    if (kIsWeb) return -1;
     final db = await database;
     return await db.insert('faces', {
       'image_path': imagePath,
@@ -363,6 +386,7 @@ class DatabaseService {
   }
   
   Future<void> updateFaceData(int faceId, Uint8List embedding, Uint8List thumbnail) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.update(
       'faces',
@@ -376,6 +400,7 @@ class DatabaseService {
   }
 
   Future<List<Map<String, dynamic>>> getFacesWithoutEmbedding() async {
+    if (kIsWeb) return [];
     final db = await database;
     return await db.query(
       'faces',
@@ -384,11 +409,13 @@ class DatabaseService {
   }
 
   Future<List<Map<String, dynamic>>> getAllFaces() async {
+    if (kIsWeb) return [];
     final db = await database;
     return await db.query('faces');
   }
 
   Future<List<Map<String, dynamic>>> getUntrainedFaces({int limit = 40}) async {
+    if (kIsWeb) return [];
     final db = await database;
     return await db.query(
       'faces',
@@ -399,12 +426,14 @@ class DatabaseService {
   }
 
   Future<int> getTotalUntrainedCount() async {
+    if (kIsWeb) return 0;
     final db = await database;
     final result = await db.rawQuery('SELECT COUNT(*) as count FROM faces WHERE fl_trained = 0');
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
   Future<void> updateFaceCluster(int faceId, int clusterId) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.update(
       'faces',
@@ -417,6 +446,7 @@ class DatabaseService {
   // --- Cluster Operations ---
 
   Future<int> createCluster({String? name, int? representativeFaceId, Uint8List? embedding}) async {
+    if (kIsWeb) return -1;
     final db = await database;
     return await db.insert('clusters', {
       'name': name,
@@ -426,6 +456,7 @@ class DatabaseService {
   }
 
   Future<void> updateClusterName(int clusterId, String newName) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.update(
       'clusters',
@@ -436,6 +467,7 @@ class DatabaseService {
   }
 
   Future<List<String>> getPhotoPathsForCluster(int clusterId) async {
+    if (kIsWeb) return [];
     final db = await database;
     final result = await db.query(
       'faces',
@@ -448,11 +480,13 @@ class DatabaseService {
   }
 
   Future<List<Map<String, dynamic>>> getAllClusters() async {
+    if (kIsWeb) return [];
     final db = await database;
     return await db.query('clusters');
   }
 
   Future<void> updateClusterEmbedding(int clusterId, Uint8List embedding) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.update(
       'clusters',
@@ -464,6 +498,7 @@ class DatabaseService {
 
   /// Initial implementation to fetch cluster + representative face details
   Future<List<Map<String, dynamic>>> getAllClustersWithThumbnail() async {
+    if (kIsWeb) return [];
     final db = await database;
     // Return cluster data, prioritizing its own thumbnail column, falling back to joined face thumbnail
     return await db.rawQuery('''
@@ -478,6 +513,7 @@ class DatabaseService {
   }
 
   Future<void> updateClusterRepresentative(int clusterId, int faceId) async {
+    if (kIsWeb) return;
     final db = await database;
     await db.update(
       'clusters',
@@ -489,6 +525,7 @@ class DatabaseService {
   
   // Get all faces belonging to a cluster
   Future<List<Map<String, dynamic>>> getFacesInCluster(int clusterId) async {
+    if (kIsWeb) return [];
     final db = await database;
     return await db.query(
       'faces',
@@ -500,6 +537,7 @@ class DatabaseService {
   // --- Semantic Search Operations ---
 
   Future<void> saveSemanticEmbedding(String id, List<double> embedding) async {
+    if (kIsWeb) return;
     final db = await database;
     final Float32List floatList = Float32List.fromList(embedding);
     await db.insert(
@@ -513,70 +551,78 @@ class DatabaseService {
   }
 
   Future<bool> isSemanticIndexed(String id) async {
+    if (kIsWeb) return false;
     final db = await database;
     final res = await db.query('semantic_embeddings', columns: ['id'], where: 'id = ?', whereArgs: [id]);
     return res.isNotEmpty;
   }
   
   Future<int> getSemanticIndexedCount() async {
+    if (kIsWeb) return 0;
     final db = await database;
     final result = await db.rawQuery('SELECT COUNT(*) as count FROM semantic_embeddings');
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
   Future<Set<String>> getAllSemanticIndexedIds() async {
+    if (kIsWeb) return {};
     final db = await database;
     final res = await db.query('semantic_embeddings', columns: ['id']);
     return res.map((e) => e['id'] as String).toSet();
   }
 
   Future<void> clearSemanticEmbeddings() async {
+    if (kIsWeb) return;
     final db = await database;
     await db.delete('semantic_embeddings');
   }
 
   Future<List<Map<String, dynamic>>> searchSemantic(List<double> queryEmbedding, {int limit = 50, double minScore = 0.0}) async {
+    if (kIsWeb) return [];
     final db = await database;
     final allEmbeddings = await db.query('semantic_embeddings');
-    
+
     if (allEmbeddings.isEmpty) return [];
 
-    // Pre-compute query L2 norm once
+    // Convert query to Float32 once — avoids repeated cast inside the hot loop
+    final queryF32 = Float32List.fromList(queryEmbedding);
+    final int dim = queryF32.length;
+
+    // Pre-compute query norm (embeddings saved by saveSemanticEmbedding are already
+    // L2-normalised, so their norm ≈ 1.0 and we can skip per-row normalisation.
+    // We still normalise the query in case it arrives un-normalised from the caller.)
     double queryNorm = 0;
-    for (final v in queryEmbedding) queryNorm += v * v;
+    for (int i = 0; i < dim; i++) queryNorm += queryF32[i] * queryF32[i];
     queryNorm = queryNorm > 0 ? sqrt(queryNorm) : 0;
-    if (queryNorm == 0) return []; // zero query vector can't be compared
-    
+    if (queryNorm == 0) return [];
+
     final List<Map<String, dynamic>> results = [];
-    
-    for (var row in allEmbeddings) {
+
+    for (final row in allEmbeddings) {
       final id = row['id'] as String;
       final rawBytes = row['embedding'] as Uint8List;
-      // Android sqflite returns BLOBs at non-4-byte-aligned offsets (e.g. offset 79).
-      // Both asFloat32List() and sublistView() require 4-byte alignment and throw RangeError.
-      // Uint8List.fromList() copies into a fresh buffer at offsetInBytes==0, making it safe.
-      final embedding = Uint8List.fromList(rawBytes).buffer.asFloat32List();
-      
-      final int len = queryEmbedding.length < embedding.length
-          ? queryEmbedding.length
-          : embedding.length;
-      if (len == 0) continue;
 
-      // Dot product
-      double dot = 0;
-      for (int i = 0; i < len; i++) {
-        dot += queryEmbedding[i] * embedding[i];
+      // Android sqflite BLOBs may land at non-4-byte-aligned offsets.
+      // Avoid a full Uint8List.fromList copy when the buffer is already aligned.
+      final Float32List embedding;
+      if (rawBytes.offsetInBytes % 4 == 0) {
+        embedding = rawBytes.buffer.asFloat32List(rawBytes.offsetInBytes, rawBytes.lengthInBytes ~/ 4);
+      } else {
+        final aligned = Uint8List(rawBytes.length)..setAll(0, rawBytes);
+        embedding = aligned.buffer.asFloat32List();
       }
 
-      // L2 norm of stored embedding
-      double embNorm = 0;
-      for (int i = 0; i < embedding.length; i++) embNorm += embedding[i] * embedding[i];
-      embNorm = embNorm > 0 ? sqrt(embNorm) : 0;
-      if (embNorm == 0) continue; // skip zero/corrupted embeddings
+      final int len = dim < embedding.length ? dim : embedding.length;
+      if (len == 0) continue;
 
-      // Cosine similarity in [-1, 1]
-      final double cosine = dot / (queryNorm * embNorm);
-      
+      // Dot product only — stored embeddings are L2-normalised (norm ≈ 1),
+      // so cosine ≈ dot / queryNorm, skipping the expensive per-row sqrt.
+      double dot = 0;
+      for (int i = 0; i < len; i++) {
+        dot += queryF32[i] * embedding[i];
+      }
+      final double cosine = dot / queryNorm;
+
       if (cosine >= minScore) {
         results.add({'id': id, 'score': cosine});
       }
@@ -585,4 +631,5 @@ class DatabaseService {
     results.sort((a, b) => (b['score'] as double).compareTo(a['score'] as double));
     return results.take(limit).toList();
   }
+
 }

@@ -58,6 +58,9 @@ class PhotoProvider with ChangeNotifier {
   // Offline Hydration State
   bool _isOfflineHydrated = false;
   
+  // Manual refresh versioning
+  final Map<String, int> _versionMap = {};
+  
   // Expose status for UI
   final ValueNotifier<String?> backgroundStatus = ValueNotifier(null);
 
@@ -147,6 +150,58 @@ class PhotoProvider with ChangeNotifier {
         .where((item) => item.type == GalleryItemType.local)
         .map((item) => item.local)
         .firstWhereOrNull((entity) => entity?.id == id);
+  }
+
+  /// Manually injects a new asset into the provider and SQLite index.
+  /// Used after editing to provide instant feedback without a full re-scan.
+  Future<void> addAssetInstantly(AssetEntity asset, {String? replaceId}) async {
+    try {
+      // 1. Update SQLite immediately so it persists across restarts
+      final Map<String, dynamic> cacheObject = {
+        'id': asset.id,
+        'title': asset.title ?? '',
+        'type_int': asset.typeInt,
+        'width': asset.width,
+        'height': asset.height,
+        'create_dt': asset.createDateSecond,
+        'modify_dt': asset.modifiedDateSecond,
+        'relative_path': '',
+        'is_favorite': asset.isFavorite ? 1 : 0,
+      };
+      await DatabaseService().saveGalleryIndex([cacheObject]);
+
+      // 2. Remove the old asset if we are overwriting
+      if (replaceId != null) {
+        final ver = (_versionMap[replaceId] ?? 0) + 1;
+        _versionMap[asset.id] = ver;
+        if (replaceId != asset.id) _versionMap.remove(replaceId);
+
+        _allAssets.removeWhere((e) => e.id == replaceId);
+        await DatabaseService().deleteFromGalleryIndex(replaceId);
+      } else {
+        _versionMap[asset.id] = (_versionMap[asset.id] ?? 0) + 1;
+      }
+
+      // 3. Add to memory list (avoid duplicates)
+      if (!_allAssets.any((e) => e.id == asset.id)) {
+        _allAssets.add(asset);
+      }
+
+      // 4. Sort and Group
+      await _groupAssets();
+      notifyListeners();
+      
+      debugPrint("PhotoProvider: Manually injected asset ${asset.id} (replaceId: $replaceId, version: ${_versionMap[asset.id]})");
+    } catch (e) {
+      debugPrint("PhotoProvider: Error in addAssetInstantly: $e");
+    }
+  }
+
+  /// Force-increments the display version of an asset to trigger a UI refresh.
+  void forceReloadThumbnail(String id) {
+    _versionMap[id] = (_versionMap[id] ?? 0) + 1;
+    _groupAssets(); // Re-creates GalleryItems with new version
+    notifyListeners();
   }
 
   Future<void> refresh() async {
@@ -481,8 +536,15 @@ class PhotoProvider with ChangeNotifier {
 
     // 1. Combine
     _allItems = [
-      ..._allAssets.map((e) => GalleryItem.local(e, isFavorite: favIds.contains(e.id))),
-      ...uniqueRemote.map((e) => GalleryItem.remote(e))
+      ..._allAssets.map((e) => GalleryItem.local(
+        e, 
+        isFavorite: favIds.contains(e.id), 
+        version: _versionMap[e.id] ?? 0
+      )),
+      ...uniqueRemote.map((e) => GalleryItem.remote(
+        e, 
+        version: _versionMap[e.imageId] ?? 0
+      ))
     ];
     
     // 2. Sort DESC
@@ -1054,7 +1116,7 @@ class PhotoProvider with ChangeNotifier {
           }
           
           if (cloudIdsToUpdate.isNotEmpty) {
-             final success = await BackupService().updateCloudLocation(username, cloudIdsToUpdate, lat, lng);
+             final success = await BackupService().updateRemoteLocation(username, cloudIdsToUpdate, lat, lng);
              if (success) {
                 // Update Runtime Cache
                 for (int i = 0; i < _remoteImages.length; i++) {
@@ -1187,57 +1249,47 @@ class PhotoProvider with ChangeNotifier {
   /// Toggles the favorite status of a photo (Local or Remote)
   Future<void> toggleFavorite(GalleryItem item) async {
     try {
+      final bool newState = !item.isFavorite;
+      
+      // 1. Immediate UI update (by reference)
+      item.isFavorite = newState;
+      notifyListeners();
+
       if (item.type == GalleryItemType.local) {
         final asset = item.local!;
-        final bool newState = !asset.isFavorite;
         
-        bool success = false;
-        if (Platform.isIOS || Platform.isMacOS) {
-          try {
+        // Native Gallery Update
+        try {
+          if (Platform.isAndroid) {
+            await PhotoManager.editor.android.favoriteAsset(
+              favorite: newState,
+              entity: asset,
+            );
+          } else if (Platform.isIOS || Platform.isMacOS) {
             await PhotoManager.editor.darwin.favoriteAsset(
               favorite: newState,
               entity: asset,
             );
-          } catch (e) {
-             debugPrint("Native favorite failed: $e");
           }
-        } 
-        
-        // Secondary persistence to our SQLite index for all platforms (Windows/Android fallback)
-        await DatabaseService().updateFavoriteStatus(asset.id, newState);
-        item.isFavorite = newState; // Update in-memory override
-        success = true;
-        
-        if (success) {
-           notifyListeners();
+        } catch (e) {
+          debugPrint("PhotoProvider: Native favorite failed: $e");
         }
-      } else {
-        // Remote
-        final remote = item.remote!;
-        final bool newState = !remote.isFavorite;
         
-        // Update in-memory state
+        // Secondary persistence to our SQLite index
+        await DatabaseService().updateFavoriteStatus(asset.id, newState);
+      } else {
+        // Remote persistence
+        final remote = item.remote!;
+        final session = await AuthService().loadSession();
+        if (session != null) {
+           final userId = session['username'] as String;
+           await BackupService().updateRemoteFavoriteStatus(userId, [remote.imageId], newState);
+        }
+        
+        // Update the master list to keep it consistent
         for (int i = 0; i < _remoteImages.length; i++) {
           if (_remoteImages[i].imageId == remote.imageId) {
-            final old = _remoteImages[i];
-            _remoteImages[i] = RemoteImage(
-              imageId: old.imageId,
-              userId: old.userId,
-              album: old.album,
-              width: old.width,
-              height: old.height,
-              size: old.size,
-              latitude: old.latitude,
-              longitude: old.longitude,
-              originalUrl: old.originalUrl,
-              thumb1024Url: old.thumb1024Url,
-              thumb256Url: old.thumb256Url,
-              thumb64Url: old.thumb64Url, mimeType: old.mimeType,
-              sourceId: old.sourceId,
-              createdAt: old.createdAt,
-              isDeleted: old.isDeleted,
-              isFavorite: newState,
-            );
+            _remoteImages[i].isFavorite = newState;
             break;
           }
         }
@@ -1245,7 +1297,7 @@ class PhotoProvider with ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      debugPrint("Error toggling favorite: $e");
+      debugPrint("PhotoProvider: Error toggling favorite: $e");
     }
   }
   // --- Semantic Indexing & Search ---
@@ -1411,62 +1463,39 @@ class PhotoProvider with ChangeNotifier {
 
   Future<List<GalleryItem>> performSemanticSearch(String query) async {
     if (query.trim().isEmpty) return [];
-    
+
     try {
-      // CLIP Prompt Engineering: Use "a photo of X" template to match training distribution.
-      // MobileCLIP2 was trained on image captions — this single template consistently
-      // outperforms raw keyword queries without adding extra inference cost.
+      // CLIP Prompt Engineering: "a photo of X" matches training distribution.
       final promptedQuery = 'a photo of ${query.trim().toLowerCase()}';
       final queryEmbedding = await _semanticService.generateTextEmbedding(promptedQuery);
-      debugPrint("SemanticSearch: Query='$query' → prompted='$promptedQuery' size=${queryEmbedding.length}");
-      if (queryEmbedding.isEmpty) {
-        debugPrint("SemanticSearch: Text embedding empty — model may not be loaded.");
-        return [];
-      }
+      debugPrint("SemanticSearch: Query='$query' size=${queryEmbedding.length}");
+      if (queryEmbedding.isEmpty) return [];
 
-      // Log actual DB row count — should be > 0 after indexing completes
-      final dbCount = await DatabaseService().getSemanticIndexedCount();
-      debugPrint("SemanticSearch: DB has $dbCount indexed embeddings.");
-
-      // minScore: 0.0, limit: 20 — always return top-20 most relevant photos.
-      // MobileCLIP2 S0 scores typically land in 0.20–0.26; a hard threshold
-      // would be too fragile. Top-N ranking is more robust for a small model.
+      // Scoring runs inline — using compute() was slower because serializing
+      // all embedding blobs across isolate boundaries costs more than the loop itself.
       final results = await DatabaseService().searchSemantic(queryEmbedding, minScore: 0.0, limit: 20);
-      debugPrint("SemanticSearch: DB returned ${results.length} raw results.");
-      if (results.isNotEmpty) {
-        final scoreLog = results.take(5).map((r) => (r['score'] as double).toStringAsFixed(3)).join(', ');
-        debugPrint("SemanticSearch: Top 5 scores: [$scoreLog]");
-      }
+      debugPrint("SemanticSearch: ${results.length} raw results.");
 
-      // Relative threshold: only keep results within 0.04 of the top score.
-      // This filters weak/irrelevant matches (e.g. manga for "red dress") without
-      // needing a hard absolute cutoff that varies per model/query.
-      final List<Map<String, dynamic>> filteredResults;
-      if (results.isEmpty) {
-        filteredResults = [];
-      } else {
-        final double topScore = results.first['score'] as double;
-        final double cutoff = topScore - 0.04;
-        filteredResults = results.where((r) => (r['score'] as double) >= cutoff).take(15).toList();
-        debugPrint("SemanticSearch: After relative filter (top-0.04=$cutoff): ${filteredResults.length} results remain.");
-      }
+      if (results.isEmpty) return [];
+
+      // Relative threshold: keep results within 0.04 of the top score
+      final double topScore = results.first['score'] as double;
+      final double cutoff = topScore - 0.04;
+      final filteredResults = results
+          .where((r) => (r['score'] as double) >= cutoff)
+          .take(15)
+          .toList();
 
       final Map<String, GalleryItem> itemsMap = {
         for (var item in _allItems) item.id: item
       };
-      debugPrint("SemanticSearch: _allItems has ${itemsMap.length} items to match against.");
 
       final List<GalleryItem> matchedItems = [];
-      int missCount = 0;
-      for (var res in filteredResults) {
-        final id = res['id'] as String;
-        if (itemsMap.containsKey(id)) {
-          matchedItems.add(itemsMap[id]!);
-        } else {
-          missCount++;
-        }
+      for (final res in filteredResults) {
+        final item = itemsMap[res['id'] as String];
+        if (item != null) matchedItems.add(item);
       }
-      debugPrint("SemanticSearch: Found ${matchedItems.length} matches, $missCount IDs not in _allItems.");
+      debugPrint("SemanticSearch: ${matchedItems.length} items matched.");
 
       return matchedItems;
     } catch (e) {
