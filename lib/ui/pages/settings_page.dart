@@ -77,6 +77,8 @@ class _SettingsPageState extends State<SettingsPage> {
                     const SizedBox(height: 24),
                     _buildSemanticSection(),
                     const SizedBox(height: 24),
+                    _buildThumbnailSection(),
+                    const SizedBox(height: 24),
                     if (!kIsWeb && !Platform.isWindows) _buildBackupSection(),
                     if (!kIsWeb && !Platform.isWindows) const SizedBox(height: 24),
                     if (!kIsWeb) _buildFLSection(),
@@ -345,6 +347,145 @@ class _SettingsPageState extends State<SettingsPage> {
                       icon: const Icon(Icons.refresh_rounded, size: 18),
                       label: const Text('Clear & Re-index'),
                     ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildThumbnailSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader('Storage & Optimization', Icons.storage_rounded),
+        _buildGlassCard(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Consumer<PhotoProvider>(
+              builder: (context, provider, child) {
+                final int totalItems = provider.thumbnailTotalCount;
+                final int generatedCount = provider.thumbnailGeneratedCount;
+                final int remainingCount = provider.thumbnailRemainingCount;
+                final String diskSize = provider.thumbnailDiskSize;
+                final bool isGenerating = provider.isThumbnailGenerating;
+                final double progress = provider.thumbnailProgress;
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.2), shape: BoxShape.circle),
+                          child: const Icon(Icons.flash_on_rounded, color: Colors.blueAccent, size: 24),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Thumbnail Optimization', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                              const SizedBox(height: 4),
+                              Text(
+                                isGenerating 
+                                  ? 'Generating thumbnails in background for smooth scrolling...' 
+                                  : 'All thumbnails are cached and optimized.',
+                                style: const TextStyle(color: Colors.white54, fontSize: 13, height: 1.3),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              isGenerating ? '${(progress * 100).toStringAsFixed(1)}%' : 'Completed',
+                              style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              isGenerating ? '$remainingCount remaining' : 'Cached on disk',
+                              style: const TextStyle(color: Colors.white54, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              '$generatedCount / $totalItems optimized',
+                              style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Size: $diskSize',
+                              style: const TextStyle(color: Colors.blueAccent, fontSize: 12, fontWeight: FontWeight.w500),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    // Modern Progress Bar
+                    Container(
+                      height: 8,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: FractionallySizedBox(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: totalItems > 0 
+                            ? (isGenerating ? progress : (generatedCount / totalItems).clamp(0.0, 1.0))
+                            : 0.0,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [Colors.cyanAccent, Colors.blueAccent],
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.blueAccent.withOpacity(0.3),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              )
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (!isGenerating && generatedCount < totalItems) ...[
+                      const SizedBox(height: 20),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white.withOpacity(0.1),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () {
+                           provider.startBackgroundThumbnailGeneration();
+                        },
+                        icon: const Icon(Icons.bolt_rounded, size: 20),
+                        label: const Text('Optimize Library Now'),
+                      ),
+                    ],
                   ],
                 );
               },

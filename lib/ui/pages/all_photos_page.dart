@@ -967,7 +967,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
               if (!selection.isSelectionMode || selection.selectedItems.isEmpty) return const SizedBox.shrink();
 
               return Positioned(
-                bottom: 30, // Hover above bottom bar
+                bottom: 24, // Consistent offset above the navigation area
                 left: 0,
                 right: 0,
                 child: Center(

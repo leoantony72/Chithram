@@ -35,6 +35,7 @@ class _ScaffoldWithNavBarState extends State<ScaffoldWithNavBar> {
               // If we're on desktop, push it right so it doesn't overlap the sidebar
               Positioned.fill(
                 left: isMobile ? 0 : 80, // Padding for the sidebar
+                bottom: isMobile ? 100 : 0, // Padding for floating mobile navbar
                 child: widget.navigationShell,
               ),
 

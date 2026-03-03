@@ -112,8 +112,11 @@ class ModelService {
         if (await tempFile.exists()) await tempFile.delete();
         
         final sink = tempFile.openWrite();
-        await streamedResponse.stream.pipe(sink);
-        await sink.close();
+        try {
+          await streamedResponse.stream.pipe(sink);
+        } finally {
+          await sink.close();
+        }
         
         // Atomic rename (Handle cross-device link exceptions on Android)
         if (await file.exists()) await file.delete();

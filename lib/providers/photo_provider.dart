@@ -26,6 +26,7 @@ import '../models/gallery_item.dart';
 import '../models/remote_image.dart';
 import '../services/semantic/semantic_service.dart';
 import '../services/semantic/indexing_worker.dart';
+import '../utils/metadata_utils.dart';
 
 class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> _paths = [];
@@ -54,9 +55,21 @@ class PhotoProvider with ChangeNotifier {
   bool _isSemanticIndexing = false;
   double _semanticProgress = 0.0;
   int _semanticIndexedCount = 0;
+  String? _locationStatus;
+
+  String? get locationStatus => _locationStatus;
   
   // Offline Hydration State
   bool _isOfflineHydrated = false;
+  
+  // Thumbnail Generation State
+  bool _isThumbnailGenerating = false;
+  int _thumbnailGeneratedCount = 0;
+  int _thumbnailTotalCount = 0;
+  int _thumbnailRemainingCount = 0;
+  String _thumbnailDiskSize = "0 MB";
+  double _thumbnailProgress = 0.0;
+  DateTime _lastDiskUsageCheck = DateTime.fromMillisecondsSinceEpoch(0);
   
   // Manual refresh versioning
   final Map<String, int> _versionMap = {};
@@ -87,6 +100,13 @@ class PhotoProvider with ChangeNotifier {
   bool get isSemanticIndexing => _isSemanticIndexing;
   double get semanticProgress => _semanticProgress;
   int get semanticIndexedCount => _semanticIndexedCount;
+
+  bool get isThumbnailGenerating => _isThumbnailGenerating;
+  int get thumbnailGeneratedCount => _thumbnailGeneratedCount;
+  int get thumbnailTotalCount => _thumbnailTotalCount;
+  int get thumbnailRemainingCount => _thumbnailRemainingCount;
+  String get thumbnailDiskSize => _thumbnailDiskSize;
+  double get thumbnailProgress => _thumbnailProgress;
   
   // Calculate total cloud bytes
   int get totalCloudStorageBytes {
@@ -135,9 +155,11 @@ class PhotoProvider with ChangeNotifier {
       // Re-group with new data
       await _groupAssets();
       await initSemanticStats();
+      await initThumbnailStats();
       notifyListeners();
       // Now that _allItems is populated, kick off indexing if not already running
       startSemanticIndexing();
+      startBackgroundThumbnailGeneration();
     } else {
       debugPrint("PhotoProvider: Cannot fetch remote photos - No session found.");
     }
@@ -330,6 +352,7 @@ class PhotoProvider with ChangeNotifier {
             
             await startLocationScan();
             _groupPlacesAsync(); // Fire places grouping async
+            await initThumbnailStats();
          }
          
          // Phase 2: SILENT BACKGROUND OS SYNC
@@ -337,6 +360,7 @@ class PhotoProvider with ChangeNotifier {
       } 
       
       await fetchRemotePhotos();
+      await initThumbnailStats();
     } catch (e) {
       debugPrint("Error fetching assets: $e");
     } finally {
@@ -432,6 +456,7 @@ class PhotoProvider with ChangeNotifier {
                     await _groupAssets();
                     notifyListeners();
                     await startLocationScan();
+                    await initThumbnailStats();
                     // Defer heavy indexing on first launch
                     Future.delayed(const Duration(seconds: 15), () {
                        startSemanticIndexing();
@@ -535,7 +560,7 @@ class PhotoProvider with ChangeNotifier {
     final favIds = await DatabaseService().getFavoritesIds();
 
     // 1. Combine
-    _allItems = [
+    final List<GalleryItem> unsortedItems = [
       ..._allAssets.map((e) => GalleryItem.local(
         e, 
         isFavorite: favIds.contains(e.id), 
@@ -547,39 +572,45 @@ class PhotoProvider with ChangeNotifier {
       ))
     ];
     
-    // 2. Sort DESC
-    _allItems.sort((a, b) => b.date.compareTo(a.date));
+    if (unsortedItems.isEmpty) {
+      _allItems = [];
+      _groupedByDay = [];
+      _groupedByMonth = [];
+      _groupedByYear = [];
+      return;
+    }
 
-    // 3. Group
-    // Group by Day
-    final Map<DateTime, List<GalleryItem>> dayGroups = groupBy(_allItems, (GalleryItem e) {
-       return DateTime(e.date.year, e.date.month, e.date.day);
-    });
-
-    _groupedByDay = dayGroups.entries.map((entry) {
-      return PhotoGroup(date: entry.key, items: entry.value);
+    // 2. Heavy Lift in Isolate
+    // Prepare lightweight data for Isolate
+    final List<Map<String, dynamic>> rawData = unsortedItems.asMap().entries.map((entry) {
+      return {
+        'index': entry.key,
+        'date': entry.value.date.millisecondsSinceEpoch,
+      };
     }).toList();
-    _groupedByDay.sort((a, b) => b.date.compareTo(a.date));
 
-    // Group by Month
-    final Map<DateTime, List<GalleryItem>> monthGroups = groupBy(_allItems, (GalleryItem e) {
-      return DateTime(e.date.year, e.date.month);
-    });
+    final result = await compute(_performGroupingIsolate, rawData);
 
-    _groupedByMonth = monthGroups.entries.map((entry) {
-      return PhotoGroup(date: entry.key, items: entry.value);
-    }).toList();
-    _groupedByMonth.sort((a, b) => b.date.compareTo(a.date));
+    // 3. Reconstruct Results on Main Thread
+    _allItems = result.sortedIndices.map((idx) => unsortedItems[idx]).toList();
 
-    // Group by Year
-    final Map<DateTime, List<GalleryItem>> yearGroups = groupBy(_allItems, (GalleryItem e) {
-      return DateTime(e.date.year);
-    });
+    _groupedByDay = result.dayGroups.entries.map((entry) {
+      final date = DateTime.fromMillisecondsSinceEpoch(entry.key);
+      final items = entry.value.map((idx) => unsortedItems[idx]).toList();
+      return PhotoGroup(date: date, items: items);
+    }).toList()..sort((a, b) => b.date.compareTo(a.date));
 
-    _groupedByYear = yearGroups.entries.map((entry) {
-      return PhotoGroup(date: entry.key, items: entry.value);
-    }).toList();
-    _groupedByYear.sort((a, b) => b.date.compareTo(a.date));
+    _groupedByMonth = result.monthGroups.entries.map((entry) {
+      final date = DateTime.fromMillisecondsSinceEpoch(entry.key);
+      final items = entry.value.map((idx) => unsortedItems[idx]).toList();
+      return PhotoGroup(date: date, items: items);
+    }).toList()..sort((a, b) => b.date.compareTo(a.date));
+
+    _groupedByYear = result.yearGroups.entries.map((entry) {
+      final date = DateTime.fromMillisecondsSinceEpoch(entry.key);
+      final items = entry.value.map((idx) => unsortedItems[idx]).toList();
+      return PhotoGroup(date: date, items: items);
+    }).toList()..sort((a, b) => b.date.compareTo(a.date));
 
     // 4. Group by Place (Async due to Geocoding)
     _groupPlacesAsync();
@@ -803,7 +834,7 @@ class PhotoProvider with ChangeNotifier {
     
     int processed = 0;
     bool needsSave = false;
-    const int batchSize = 20;
+    const int batchSize = 5;
     
     for (int i = 0; i < toScan.length; i += batchSize) {
        int end = (i + batchSize < toScan.length) ? i + batchSize : toScan.length;
@@ -1139,11 +1170,69 @@ class PhotoProvider with ChangeNotifier {
           }
        }
        
-       // Update Local Map Cache for instant UI feedback regardless of backend
-       for (final item in selectedItems) {
-          _locationCache[item.id] = latlong.LatLng(lat, lng);
-       }
+        // Update Local Map Cache for instant UI feedback regardless of backend
+        for (final item in selectedItems) {
+           _locationCache[item.id] = latlong.LatLng(lat, lng);
+           
+           // Persist to EXIF for Local Assets
+           if (item.type == GalleryItemType.local && item.local != null) {
+              try {
+                 final file = await item.local!.file;
+                 if (file != null && await file.exists()) {
+                    final bytes = await file.readAsBytes();
+                    final newBytes = await MetadataUtils.injectGpsMetadata(
+                      imageBytes: bytes,
+                      latitude: lat,
+                      longitude: lng,
+                    );
+                    if (newBytes != null) {
+                      AssetEntity? updatedAsset;
+
+                      if (!kIsWeb && Platform.isAndroid) {
+                         // Android 10+ Scoped Storage: cannot write directly to gallery files.
+                         // Correct: save modified bytes as a new asset, then delete the original.
+                         final title = item.local!.title ?? "${item.local!.id}.jpg";
+                         final savedAsset = await PhotoManager.editor.saveImage(
+                           newBytes,
+                           title: title,
+                           filename: title,
+                         );
+                         if (savedAsset != null) {
+                           await PhotoManager.editor.deleteWithIds([item.local!.id]);
+                           updatedAsset = savedAsset;
+                           debugPrint("EXIF written via PhotoManager for ${item.id}");
+                         }
+                      } else {
+                         // Windows / other platforms: direct file write works fine
+                         await file.writeAsBytes(newBytes);
+                         debugPrint("EXIF written via direct write for ${item.id}");
+                      }
+
+                      // Update in-memory state so the UI reflects changes instantly
+                      if (updatedAsset != null) {
+                         final aIdx = _allAssets.indexWhere((a) => a.id == item.id);
+                         if (aIdx != -1) _allAssets[aIdx] = updatedAsset;
+                         final giIdx = _allItems.indexWhere((gi) => gi.id == item.id);
+                         if (giIdx != -1) {
+                           _allItems[giIdx] = GalleryItem.local(
+                             updatedAsset,
+                             isFavorite: item.isFavorite,
+                             version: item.version + 1,
+                           );
+                         }
+                         // Remap location cache to the new asset id
+                         _locationCache[updatedAsset.id] = latlong.LatLng(lat, lng);
+                         _locationCache.remove(item.id);
+                      }
+                    }
+                 }
+              } catch (e) {
+                 debugPrint("EXIF write failed for ${item.id}: $e");
+              }
+           }
+         }
        
+       await _saveLocationCache(); // Persist locally!
        await DatabaseService().invalidateJourneyCache();
        // Re-trigger Grouping to pass new props down
        _groupAssets();
@@ -1485,6 +1574,13 @@ class PhotoProvider with ChangeNotifier {
 
         processed++;
         _semanticProgress = processed / indexableItems.length;
+        
+        // Android Throttling: Ensure we don't hammer native resources
+        if (!kIsWeb && Platform.isAndroid) {
+          final delay = _getIndexingBudget();
+          await Future.delayed(Duration(milliseconds: delay));
+        }
+
         // Only rebuild UI every 20 images
         if (processed % 20 == 0) notifyListeners();
       }
@@ -1602,23 +1698,129 @@ class PhotoProvider with ChangeNotifier {
 
       if (totalMb >= 8192) {
         debugPrint("PhotoProvider: Memory Budget — HIGH-END device.");
-        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 0 : 80; // Android still needs breathing room
+        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 0 : 100; // Android needs breathing room
       } else if (totalMb >= 4096) {
         debugPrint("PhotoProvider: Memory Budget — MID-HIGH device.");
-        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 10 : 100;
+        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 10 : 250;
       } else if (totalMb >= 2048) {
         debugPrint("PhotoProvider: Memory Budget — MID device.");
-        return 150;
+        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 50 : 400;
       } else if (totalMb >= 1024) {
         debugPrint("PhotoProvider: Memory Budget — LOW-MID device.");
-        return 300;
+        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 100 : 600;
       } else {
         debugPrint("PhotoProvider: Memory Budget — LOW-END device.");
-        return 1200;
+        return kIsWeb || (!kIsWeb && !Platform.isAndroid) ? 300 : 1500;
       }
     } catch (e) {
       debugPrint("PhotoProvider: Memory Budget — Failed to read system info. Using safe default (100ms).");
       return 100;
     }
   }
+  Future<void> initThumbnailStats({bool forceDiskCheck = false}) async {
+    final localAssets = _allItems.where((i) => i.type == GalleryItemType.local).map((i) => i.local!).toList();
+    
+    if (localAssets.isEmpty) {
+      _thumbnailGeneratedCount = 0;
+      _thumbnailTotalCount = 0;
+      _thumbnailProgress = 1.0;
+      notifyListeners();
+      return;
+    }
+
+    final cache = ThumbnailCache();
+    // Use the optimized sync check for counting
+    final count = cache.countCachedIdsSync(localAssets.map((e) => e.id).toList());
+
+    _thumbnailGeneratedCount = count;
+    _thumbnailTotalCount = localAssets.length;
+    _thumbnailRemainingCount = (_thumbnailTotalCount - _thumbnailGeneratedCount).clamp(0, 999999);
+    _thumbnailProgress = (count / localAssets.length).clamp(0.0, 1.0);
+    
+    // Disk size - throttle this because it's slow (only check every 30 seconds or if forced)
+    final now = DateTime.now();
+    if (forceDiskCheck || now.difference(_lastDiskUsageCheck).inSeconds > 30) {
+      _lastDiskUsageCheck = now;
+      final usageBytes = await cache.getDiskUsage();
+      if (usageBytes > 1024 * 1024 * 1024) {
+         _thumbnailDiskSize = "${(usageBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB";
+      } else {
+         _thumbnailDiskSize = "${(usageBytes / (1024 * 1024)).toStringAsFixed(1)} MB";
+      }
+    }
+
+    notifyListeners();
+  }
+
+  Future<void> startBackgroundThumbnailGeneration() async {
+    if (_isThumbnailGenerating) return;
+    
+    final localAssets = _allItems.where((i) => i.type == GalleryItemType.local).map((i) => i.local!).toList();
+    if (localAssets.isEmpty) return;
+
+    _isThumbnailGenerating = true;
+    notifyListeners();
+
+    try {
+      await ThumbnailCache().generateBatch(
+        localAssets,
+        onProgress: (processed, total) {
+          // Since generateBatch processes checking existence too, we update our local stats
+          // We can't easily know precisely how many are new vs old without re-checking hasInDisk
+          // but generateBatch tells us where it is in the list.
+          _thumbnailProgress = (processed / total).clamp(0.0, 1.0);
+          
+          // Throttle UI updates for generation
+          if (processed % 200 == 0) {
+            // Re-calculate generated count for more accurate Settings UI
+            initThumbnailStats();
+          }
+        },
+      );
+      
+      // Final sync of stats
+      await initThumbnailStats();
+    } catch (e) {
+      debugPrint("PhotoProvider: Error in background thumbnail generation: $e");
+    } finally {
+      _isThumbnailGenerating = false;
+      notifyListeners();
+    }
+  }
+}
+
+// Result class for grouping isolate
+class _GroupingResult {
+  final List<int> sortedIndices;
+  final Map<int, List<int>> dayGroups;
+  final Map<int, List<int>> monthGroups;
+  final Map<int, List<int>> yearGroups;
+  _GroupingResult(this.sortedIndices, this.dayGroups, this.monthGroups, this.yearGroups);
+}
+
+// Top-level function for grouping isolate
+_GroupingResult _performGroupingIsolate(List<Map<String, dynamic>> rawItems) {
+  // Sort by date DESC
+  rawItems.sort((a, b) => (b['date'] as int).compareTo(a['date'] as int));
+  
+  final List<int> sortedIndices = rawItems.map((e) => e['index'] as int).toList();
+  
+  final Map<int, List<int>> dayGroups = {};
+  final Map<int, List<int>> monthGroups = {};
+  final Map<int, List<int>> yearGroups = {};
+
+  for (var item in rawItems) {
+    final idx = item['index'] as int;
+    final date = DateTime.fromMillisecondsSinceEpoch(item['date'] as int);
+    
+    final d = DateTime(date.year, date.month, date.day).millisecondsSinceEpoch;
+    final m = DateTime(date.year, date.month).millisecondsSinceEpoch;
+    final y = DateTime(date.year).millisecondsSinceEpoch;
+    
+    dayGroups.putIfAbsent(d, () => []).add(idx);
+    monthGroups.putIfAbsent(m, () => []).add(idx);
+    yearGroups.putIfAbsent(y, () => []).add(idx);
+  }
+
+  return _GroupingResult(sortedIndices, dayGroups, monthGroups, yearGroups);
 }

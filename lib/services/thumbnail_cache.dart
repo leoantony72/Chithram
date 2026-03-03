@@ -78,10 +78,10 @@ class ThumbnailCache {
            _diskCacheKeys.addAll(lines);
            debugPrint("Loaded usage index with ${_diskCacheKeys.length} items.");
        } else {
-           _buildIndex();
+           await _buildIndex();
        }
      } catch(e) {
-        _buildIndex();
+        await _buildIndex();
      }
   }
 
@@ -92,14 +92,17 @@ class ThumbnailCache {
         final indexFile = File('${_cacheDir!.path}/index.txt');
         final sink = indexFile.openWrite(); // Overwrite
 
-        await for (final entity in _cacheDir!.list()) {
-           if (entity is File && !entity.path.endsWith('index.txt')) {
-             final filename = entity.uri.pathSegments.last;
-             _diskCacheKeys.add(filename);
-             sink.writeln(filename);
-           }
+        try {
+          await for (final entity in _cacheDir!.list()) {
+             if (entity is File && !entity.path.endsWith('index.txt')) {
+               final filename = entity.uri.pathSegments.last;
+               _diskCacheKeys.add(filename);
+               sink.writeln(filename);
+             }
+          }
+        } finally {
+          await sink.close();
         }
-        await sink.close();
         debugPrint("Rebuilt disk index: ${_diskCacheKeys.length}");
      } catch (e) {
         debugPrint("Error building cache index: $e");
@@ -399,16 +402,41 @@ class ThumbnailCache {
     }
   }
 
-  bool hasInDisk(String id) {
+  Future<bool> hasInDisk(String id) async {
+    if (!_isInitialized) {
+      await init();
+    } else if (!_initCompleter.isCompleted) {
+      await _initCompleter.future;
+    }
+    return hasInDiskSync(id);
+  }
+
+  bool hasInDiskSync(String id) {
     if (!_isInitialized) return false;
     final safeId = base64Url.encode(utf8.encode(id));
     return _diskCacheKeys.contains(safeId);
   }
 
+  int countCachedIdsSync(List<String> ids) {
+    if (!_isInitialized) return 0;
+    int count = 0;
+    for (final id in ids) {
+      final safeId = base64Url.encode(utf8.encode(id));
+      if (_diskCacheKeys.contains(safeId)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   int get diskCacheCount => _diskCacheKeys.length;
 
   Future<int> getDiskCacheSize() async {
-    if (_cacheDir == null || !await _cacheDir!.exists()) return 0;
+    if (!_isInitialized) {
+      await init();
+    } else if (!_initCompleter.isCompleted) {
+      await _initCompleter.future;
+    }
     int totalSize = 0;
     try {
       await for (final entity in _cacheDir!.list()) {
@@ -510,9 +538,14 @@ class ThumbnailCache {
     _diskCacheKeys.clear();
   }
 
-  Future<void> generateBatch(List<AssetEntity> assets) async {
+  Future<void> generateBatch(List<AssetEntity> assets, {Function(int processed, int total)? onProgress}) async {
+    await init();
+    int processed = 0;
     for (final asset in assets) {
-      if (hasInDisk(asset.id)) continue;
+      processed++;
+      if (onProgress != null) onProgress(processed, assets.length);
+
+      if (hasInDiskSync(asset.id)) continue;
       
       try {
         // Generate
@@ -525,12 +558,35 @@ class ThumbnailCache {
         if (bytes != null) {
           final file = _getFile(asset.id);
           if (file != null) await _saveToDisk(file, bytes);
-          // Note: we DO NOT put it in memory cache here. 
-          // We want the memory cache reserved for what the user is actually looking at.
+        }
+        
+        // Breathing room for native OS resources
+        if (!kIsWeb && Platform.isAndroid) {
+          await Future.delayed(const Duration(milliseconds: 50));
         }
       } catch (e) {
-         debugPrint("Bg gen error: $e");
+         debugPrint("Bg gen error for ${asset.id}: $e");
       }
     }
+  }
+
+  Future<int> getDiskUsage() async {
+    if (!_isInitialized) await init();
+    int total = 0;
+    try {
+      if (_cacheDir != null && await _cacheDir!.exists()) {
+        await for (final file in _cacheDir!.list(recursive: false)) {
+          if (file is File) total += await file.length();
+        }
+      }
+      if (_convertedDir != null && await _convertedDir!.exists()) {
+        await for (final file in _convertedDir!.list(recursive: false)) {
+          if (file is File) total += await file.length();
+        }
+      }
+    } catch (e) {
+      debugPrint("Error calculating thumb disk usage: $e");
+    }
+    return total;
   }
 }
