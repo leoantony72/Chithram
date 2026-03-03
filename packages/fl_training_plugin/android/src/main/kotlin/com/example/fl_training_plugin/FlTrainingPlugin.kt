@@ -7,6 +7,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import org.pytorch.IValue
+import org.pytorch.LiteModuleLoader
 import org.pytorch.Module
 import org.pytorch.Tensor
 import java.io.File
@@ -42,7 +43,7 @@ class FlTrainingPlugin: FlutterPlugin, MethodCallHandler {
                val updatedModelPath = "${modelPath}_updated.pt"
                
                // Load model via PyTorch Lite
-               val module = Module.load(modelPath)
+               val module = LiteModuleLoader.load(modelPath)
                
                // Assuming the model provides a "train_step" method which performs updates
                // or returns updated weights, and a "save" method to write to disk.

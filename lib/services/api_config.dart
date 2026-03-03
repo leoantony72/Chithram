@@ -35,7 +35,7 @@ class ApiConfig {
     
     // Android requires a custom network IP, defaulting to the old static fallback but easily overrideable
     if (Platform.isAndroid) {
-      return 'http://192.168.18.11:$_port';
+      return 'http://10.124.59.139:$_port';
     }
 
     return 'http://localhost:$_port';
@@ -63,6 +63,29 @@ class ApiConfig {
   // Get the pure IP string for UI display
   Future<String> getCurrentIp() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('custom_api_ip') ?? (Platform.isAndroid ? '192.168.18.11' : (kIsWeb ? Uri.base.host : 'localhost'));
+    
+    // Check SharedPreferences first
+    String? customIp = prefs.getString('custom_api_ip');
+    if (customIp != null && customIp.isNotEmpty) {
+      return customIp;
+    }
+
+    if (kIsWeb) {
+      final host = Uri.base.host;
+      if (host.isNotEmpty && host != 'localhost' && host != '127.0.0.1') {
+        return host;
+      }
+      return 'localhost';
+    }
+    
+    if (Platform.isWindows) {
+      return 'localhost';
+    }
+    
+    if (Platform.isAndroid) {
+      return '10.124.59.139';
+    }
+
+    return 'localhost';
   }
 }

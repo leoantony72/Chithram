@@ -198,6 +198,8 @@ func GenerateUploadURLs(c *gin.Context) {
 			objectName = fmt.Sprintf("%s/images/originals/%s.enc", input.UserID, input.ImageID)
 		} else if variant == "faces" {
 			objectName = fmt.Sprintf("%s/metadata/faces.enc", input.UserID)
+		} else if variant == "semantic" {
+			objectName = fmt.Sprintf("%s/metadata/semantic.enc", input.UserID)
 		} else {
 			objectName = fmt.Sprintf("%s/images/thumbnails/%s_%s.enc", input.UserID, input.ImageID, variant)
 		}
@@ -320,8 +322,78 @@ func GetPeopleVersion(c *gin.Context) {
 		return
 	}
 
+}
+
+// GetSemanticDownloadURL generates a presigned GET URL to download the user's encrypted semantic blob and includes version
+func GetSemanticDownloadURL(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var user models.User
+	if err := database.DB.Where("username = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	objectName := fmt.Sprintf("%s/metadata/semantic.enc", userID)
+	url, err := services.GetPresignedURL(objectName, 7*24*time.Hour)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate download URL"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"version": user.PeopleVersion,
+		"url":     url,
+		"version": user.SemanticVersion,
+	})
+}
+
+// RegisterSemanticVersion updates the semantic_version for a user and returns the new version
+func RegisterSemanticVersion(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var user models.User
+	if err := database.DB.Where("username = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Increment version
+	user.SemanticVersion++
+	if err := database.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update version"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Semantic version updated",
+		"version": user.SemanticVersion,
+	})
+}
+
+// GetSemanticVersion returns the current semantic_version for a user
+func GetSemanticVersion(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	var user models.User
+	if err := database.DB.Where("username = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"version": user.SemanticVersion,
 	})
 }
 

@@ -1303,6 +1303,20 @@ class PhotoProvider with ChangeNotifier {
   // --- Semantic Indexing & Search ---
 
   final SemanticService _semanticService = SemanticService();
+  bool _pauseSemanticIndexing = false;
+  
+  bool get isSemanticPaused => _pauseSemanticIndexing;
+
+  void pauseSemanticIndexing() {
+    _pauseSemanticIndexing = true;
+    _isSemanticIndexing = false; // Allow resuming
+    notifyListeners();
+  }
+
+  void resumeSemanticIndexing() {
+    _pauseSemanticIndexing = false;
+    startSemanticIndexing();
+  }
 
   Future<void> initSemanticStats() async {
     if (_allItems.isEmpty) return;
@@ -1369,6 +1383,32 @@ class PhotoProvider with ChangeNotifier {
       ).toList();
       debugPrint("PhotoProvider: Total indexable items: ${indexableItems.length}");
 
+      SecureKey? masterKey;
+      String? userId;
+      final session = await AuthService().loadSession();
+      if (session != null) {
+        userId = session['username'] as String;
+        final masterKeyBytes = session['masterKey'] as Uint8List;
+        masterKey = SecureKey.fromList(CryptoService().sodium, masterKeyBytes);
+
+        // Fetch Cloud Semantic version
+        try {
+          final remoteSemanticVersion = await BackupService().getRemoteSemanticVersion(userId);
+          final localSemanticVersionStr = await DatabaseService().getBackupSetting('semantic_data_version');
+          final localSemanticVersion = int.tryParse(localSemanticVersionStr ?? '0') ?? 0;
+          
+          if (remoteSemanticVersion > localSemanticVersion) {
+              debugPrint("PhotoProvider: Remote Semantic Database is newer ($remoteSemanticVersion > $localSemanticVersion). Downloading...");
+              final success = await BackupService().downloadSemanticDatabase();
+              if (success) {
+                  debugPrint("PhotoProvider: Semantic Database sync complete.");
+              }
+          }
+        } catch (e) {
+          debugPrint("PhotoProvider: Could not check remote semantic version: $e");
+        }
+      }
+
       // Batch fetch already indexed IDs
       Set<String> indexedIds = await DatabaseService().getAllSemanticIndexedIds();
       debugPrint("PhotoProvider: Already indexed count from DB: ${indexedIds.length}");
@@ -1389,23 +1429,21 @@ class PhotoProvider with ChangeNotifier {
       int newlyIndexed = 0;
       _semanticIndexedCount = indexedIds.length;
 
-      // Prepare cloud decryption if needed
-      SecureKey? masterKey;
-      String? userId;
-      if (indexableItems.any((i) => i.type == GalleryItemType.remote)) {
-        final session = await AuthService().loadSession();
-        if (session != null) {
-          userId = session['username'] as String;
-          final masterKeyBytes = session['masterKey'] as Uint8List;
-          masterKey = SecureKey.fromList(CryptoService().sodium, masterKeyBytes);
-        }
-      }
+      // Setup masterKey from previous auth check in case remote fetching uses proxy in the loop
+      // (masterKey is already populated above)
 
       for (var item in indexableItems) {
+        if (_pauseSemanticIndexing) {
+           debugPrint("PhotoProvider: Semantic indexing paused by user.");
+           break;
+        }
         if (!_isSemanticIndexing) break;
 
         if (indexedIds.contains(item.id)) {
           processed++;
+          _semanticProgress = processed / indexableItems.length;
+          // Important: update UI even when skipping, otherwise it freezes!
+          if (processed % 20 == 0) notifyListeners();
           continue;
         }
 
@@ -1452,11 +1490,20 @@ class PhotoProvider with ChangeNotifier {
       }
 
       debugPrint("Semantic Indexing Complete. Total indexed: $_semanticIndexedCount. Newly indexed: $newlyIndexed.");
+
+      // If we finished genuinely and didn't pause, upload the database to the cloud
+      if (!_pauseSemanticIndexing && newlyIndexed > 0) {
+          debugPrint("PhotoProvider: Uploading Semantic Database to cloud.");
+          await BackupService().uploadSemanticDatabase();
+      }
+
     } catch (e) {
       debugPrint("Semantic Indexing Error: $e");
     } finally {
       worker?.dispose();
-      _isSemanticIndexing = false;
+      if (!_pauseSemanticIndexing) {
+         _isSemanticIndexing = false;
+      }
       notifyListeners();
     }
   }

@@ -269,7 +269,22 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                     ),
                     const SizedBox(height: 20),
-                    if (!isIndexing && indexedCount < totalItems)
+                    if (isIndexing && !provider.isSemanticPaused)
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white.withOpacity(0.1),
+                          foregroundColor: Colors.orangeAccent,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: () {
+                           provider.pauseSemanticIndexing();
+                        },
+                        icon: const Icon(Icons.pause_rounded, size: 20),
+                        label: const Text('Pause Indexing'),
+                      )
+                    else if (indexedCount < totalItems)
                       ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white.withOpacity(0.1),
@@ -279,7 +294,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         onPressed: () {
-                           provider.startSemanticIndexing();
+                           provider.resumeSemanticIndexing();
                         },
                         icon: const Icon(Icons.play_arrow_rounded, size: 20),
                         label: const Text('Resume Indexing'),
@@ -321,7 +336,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         await DatabaseService().clearSemanticEmbeddings();
                         if (context.mounted) {
                           await provider.initSemanticStats();
-                          provider.startSemanticIndexing();
+                          provider.resumeSemanticIndexing();
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('AI index cleared. Re-indexing started...')),
                           );

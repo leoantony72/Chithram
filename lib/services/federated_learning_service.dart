@@ -104,7 +104,7 @@ class FederatedLearningService {
         final sqliteDbPath = join(dbPathStr, 'chithram_faces.db');
 
         onProgress?.call(0.2, "Starting AI Engine...");
-        final String pythonCmd = !kIsWeb && Platform.isWindows ? '.venv\\Scripts\\python.exe' : 'python';
+        final String pythonCmd = 'python';
         final process = await Process.start(pythonCmd, [
           'scripts/desktop_train.py',
           modelFile.path,

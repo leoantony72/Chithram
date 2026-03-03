@@ -153,12 +153,18 @@ class _PeoplePageState extends State<PeoplePage> {
       _statusMessage = 'Initializing...';
     });
 
+    bool canScanLocal = true;
     try {
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
         final PermissionState ps = await PhotoManager.requestPermissionExtend();
         if (!ps.isAuth) {
-          setState(() => _isScanning = false);
-          return;
+          canScanLocal = false;
+          if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+               content: Text('Storage Permission blocked. Skipping local photos.'),
+               backgroundColor: Colors.orangeAccent,
+             ));
+          }
         }
       }
     } catch (e) {
@@ -178,7 +184,7 @@ class _PeoplePageState extends State<PeoplePage> {
     await _faceService.initialize();
 
     // Pipeline Execution
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    if (canScanLocal && !kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
        await _scanDetectionPhase();
        await _scanEmbeddingPhase();
     }
@@ -202,6 +208,13 @@ class _PeoplePageState extends State<PeoplePage> {
       _scanPhase = ScanPhase.idle;
       _statusMessage = uploadSuccess ? 'Scan & Cloud Sync Complete' : 'Scan Complete (Upload Failed)';
     });
+    
+    if (mounted) {
+       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+         content: Text(uploadSuccess ? 'Scan complete! All photos are up to date.' : 'Scan completed, but cloud backup failed.'),
+         duration: const Duration(seconds: 3),
+       ));
+    }
     _loadClusters();
   }
 

@@ -711,6 +711,17 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                   onPressed: () => selection.clearSelection(),
                 ),
                 title: Text('${selection.selectedItems.length} selected', style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                    onPressed: () async {
+                      final provider = context.read<PhotoProvider>();
+                      final items = List<GalleryItem>.from(selection.selectedItems); // Crucial copy
+                      selection.clearSelection(); 
+                      await provider.deleteSelectedPhotos(context, items);
+                    },
+                  ),
+                ],
               );
             }
             return AppBar(
@@ -1171,7 +1182,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   Widget _buildIndexingProgress() {
     return Consumer<PhotoProvider>(
       builder: (context, provider, child) {
-        if (!provider.isSemanticIndexing) return const SizedBox.shrink();
+        if (!provider.isSemanticIndexing && !provider.isSemanticPaused) return const SizedBox.shrink();
 
         return Positioned(
           top: 10,
@@ -1186,15 +1197,33 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent),
-                    ),
+                    if (provider.isSemanticIndexing)
+                       const SizedBox(
+                         width: 12,
+                         height: 12,
+                         child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent),
+                       )
+                    else 
+                       const Icon(Icons.pause, color: Colors.orangeAccent, size: 14),
                     const SizedBox(width: 8),
                     Text(
-                      'Analyzing: ${(provider.semanticProgress * 100).toInt()}%',
+                      provider.isSemanticPaused ? 'Paused: ${(provider.semanticProgress * 100).toInt()}%' : 'Analyzing: ${(provider.semanticProgress * 100).toInt()}%',
                       style: const TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () {
+                         if (provider.isSemanticPaused) {
+                             provider.resumeSemanticIndexing();
+                         } else {
+                             provider.pauseSemanticIndexing();
+                         }
+                      },
+                      child: Icon(
+                        provider.isSemanticPaused ? Icons.play_arrow_rounded : Icons.pause_rounded, 
+                        color: Colors.white, 
+                        size: 18
+                      ),
                     ),
                   ],
                 ),

@@ -65,6 +65,7 @@ func main() {
 
 	// Image Endpoints
 	r.DELETE("/images", controllers.DeleteImages)
+	r.POST("/images/delete", controllers.DeleteImages) // Windows/Dart POST-with-body fallback
 	r.PUT("/images/location", controllers.UpdateImageLocation)
 	r.PUT("/images/album", controllers.UpdateImageAlbum)
 	r.PUT("/images/favorite", controllers.UpdateImageFavorite)
@@ -78,6 +79,11 @@ func main() {
 	r.GET("/images/faces", controllers.GetFacesDownloadURL)
 	r.GET("/images/faces/version", controllers.GetPeopleVersion)
 	r.POST("/images/faces/register", controllers.RegisterPeopleVersion)
+
+	r.GET("/images/semantic", controllers.GetSemanticDownloadURL)
+	r.GET("/images/semantic/version", controllers.GetSemanticVersion)
+	r.POST("/images/semantic/register", controllers.RegisterSemanticVersion)
+
 	r.GET("/sync", controllers.SyncImages)
 	r.GET("/images/download/:id", controllers.DownloadImage)
 

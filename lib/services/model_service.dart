@@ -115,9 +115,15 @@ class ModelService {
         await streamedResponse.stream.pipe(sink);
         await sink.close();
         
-        // Atomic rename
+        // Atomic rename (Handle cross-device link exceptions on Android)
         if (await file.exists()) await file.delete();
-        await tempFile.rename(file.path);
+        try {
+          await tempFile.rename(file.path);
+        } catch (_) {
+          // Fallback if renaming across mount points fails on some devices (rare but happens)
+          await tempFile.copy(file.path);
+          await tempFile.delete();
+        }
 
         if (remoteVersion != null) {
           await prefs.setString(localVersionKey, remoteVersion);

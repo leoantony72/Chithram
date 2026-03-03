@@ -756,17 +756,87 @@ class BackupService {
       return -1;
   }
 
+  Future<bool> uploadSemanticDatabase() async {
+      if (kIsWeb) return false;
+      final session = await _auth.loadSession();
+      if (session == null) return false;
+      final userId = session['username'] as String;
+      final masterKeyBytes = session['masterKey'] as Uint8List;
+      final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
+
+      final db = await _db.database;
+      final allEmbeddings = await db.query('semantic_embeddings');
+      
+      final Map<String, dynamic> exportData = {
+         'semantic_embeddings': [],
+      };
+
+      for (var row in allEmbeddings) {
+         final blob = row['embedding'] as Uint8List?;
+         List<double>? vector;
+         if (blob != null) {
+            var buffer = blob.buffer;
+            var offset = blob.offsetInBytes;
+            if (offset % 4 != 0) {
+                 final copy = Uint8List.fromList(blob);
+                 buffer = copy.buffer;
+                 offset = 0;
+            }
+            vector = Float32List.view(buffer, offset, blob.lengthInBytes ~/ 4).toList();
+         }
+         exportData['semantic_embeddings'].add({
+            'id': row['id'],
+            'embedding': vector,
+         });
+      }
+
+      final jsonBytes = utf8.encode(jsonEncode(exportData));
+      
+      final urls = await _getUploadUrls(userId, 'semantic_blob', ['semantic']);
+      if (urls == null || !urls.containsKey('semantic')) return false;
+
+      final success = await _encryptAndUpload(urls['semantic']!, Uint8List.fromList(jsonBytes), masterKey, 'semantic');
+      if (!success) return false;
+
+      // Register new version
+      try {
+          final uri = Uri.parse('$_baseUrl/images/semantic/register?user_id=$userId');
+          final response = await http.post(uri);
+          if (response.statusCode == 200) {
+              final newVersion = jsonDecode(response.body)['version'] as int;
+              await _db.setBackupSetting('semantic_data_version', newVersion.toString());
+              print('BackupService: Semantic version registered: $newVersion');
+          }
+      } catch (e) {
+          print('BackupService: Error registering semantic version: $e');
+      }
+      return true;
+  }
+
+  Future<int> getRemoteSemanticVersion(String userId) async {
+      try {
+          final uri = Uri.parse('$_baseUrl/images/semantic/version?user_id=$userId');
+          final response = await http.get(uri);
+          if (response.statusCode == 200) {
+              return jsonDecode(response.body)['version'] as int;
+          }
+      } catch (e) {
+          print('BackupService: Error getting remote semantic version: $e');
+      }
+      return -1;
+  }
+
   // --- Deletion Features ---
   
   /// Deletes specified image IDs permanently from the cloud backend.
   Future<bool> deleteCloudImages(String userId, List<String> imageIds) async {
     try {
-      final uri = Uri.parse('$_baseUrl/images?user_id=$userId');
+      final uri = Uri.parse('$_baseUrl/images/delete?user_id=$userId');
       final requestBody = jsonEncode({
         'image_ids': imageIds,
       });
 
-      final response = await http.delete(
+      final response = await http.post(
         uri, 
         headers: {'Content-Type': 'application/json'},
         body: requestBody,
@@ -1105,6 +1175,49 @@ class BackupService {
       // Mark version locally
       await _db.setBackupSetting('people_data_version', version.toString());
 
+      return true;
+  }
+
+  Future<bool> downloadSemanticDatabase() async {
+      if (kIsWeb) return false;
+      final session = await _auth.loadSession();
+      if (session == null) return false;
+      final userId = session['username'] as String;
+      final masterKeyBytes = session['masterKey'] as Uint8List;
+      final masterKey = SecureKey.fromList(_crypto.sodium, masterKeyBytes);
+
+      final uri = Uri.parse('$_baseUrl/images/semantic?user_id=$userId');
+      final response = await http.get(uri);
+      if (response.statusCode != 200) return false;
+
+      final resBody = jsonDecode(response.body);
+      final url = resBody['url'] as String;
+      final version = resBody['version'] as int;
+
+      final bytes = await fetchAndDecryptFromUrl(url, masterKey);
+      if (bytes == null) return false;
+
+      final jsonStr = utf8.decode(bytes);
+      final data = jsonDecode(jsonStr);
+
+      final db = await _db.database;
+      await db.delete('semantic_embeddings');
+
+      final importedEmbeddings = data['semantic_embeddings'] as List<dynamic>;
+      for (var f in importedEmbeddings) {
+         Uint8List? embBytes;
+         if (f['embedding'] != null) {
+            final List<dynamic> dlist = f['embedding'];
+            embBytes = Float32List.fromList(dlist.map((e) => (e as num).toDouble()).toList().cast<double>()).buffer.asUint8List();
+         }
+
+         await db.insert('semantic_embeddings', {
+             'id': f['id'],
+             'embedding': embBytes,
+         });
+      }
+
+      await _db.setBackupSetting('semantic_data_version', version.toString());
       return true;
   }
 }

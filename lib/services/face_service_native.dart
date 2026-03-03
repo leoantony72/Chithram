@@ -65,6 +65,14 @@ class FaceService {
       print('FaceService: Recognition model loaded from buffer fallback.');
     } catch (e) {
       print('FaceService: All recognition loading attempts failed: $e');
+      // If the file is a corrupted download (e.g. HTML router page instead of ONNX binary), delete it so it redownloads.
+      try {
+        final f = File(path);
+        if (await f.exists()) await f.delete();
+        print('FaceService: Deleted corrupted model file at $path to force redownload.');
+      } catch (delErr) {
+        print('FaceService: Failed to delete corrupted file: $delErr');
+      }
     }
   }
 
@@ -87,7 +95,7 @@ class FaceService {
     try {
       if (!kIsWeb && (Platform.isWindows || Platform.isLinux)) {
         // Run Desktop Fallback Python Detector via virtual environment
-        final String pythonCmd = !kIsWeb && Platform.isWindows ? '.venv\\Scripts\\python.exe' : 'python';
+        final String pythonCmd = 'python';
         final detModelPath = await _modelService.getModelPath(ModelService.faceDetectionModelName);
         
         final result = await Process.run(pythonCmd, [

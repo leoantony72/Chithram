@@ -54,6 +54,10 @@ void _isolateMain(SendPort mainSendPort) {
         message.replyPort.send(true);
       } catch (e) {
         print('[IndexingWorker] Init error (all attempts failed): $e');
+        try {
+          final f = File(message.modelPath);
+          if (f.existsSync()) f.deleteSync();
+        } catch (_) {}
         message.replyPort.send(false);
       }
       return;
