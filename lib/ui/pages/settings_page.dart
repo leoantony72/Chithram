@@ -10,6 +10,7 @@ import '../../services/api_config.dart';
 import '../../providers/photo_provider.dart';
 import '../../models/gallery_item.dart';
 import '../../services/database_service.dart';
+import '../../services/trip_planner_service.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -76,6 +77,8 @@ class _SettingsPageState extends State<SettingsPage> {
                     _buildNetworkSection(),
                     const SizedBox(height: 24),
                     _buildSemanticSection(),
+                    const SizedBox(height: 24),
+                    _buildTripPlannerSection(),
                     const SizedBox(height: 24),
                     _buildThumbnailSection(),
                     const SizedBox(height: 24),
@@ -490,6 +493,71 @@ class _SettingsPageState extends State<SettingsPage> {
                 );
               },
             ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTripPlannerSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader('AI Trip Planner', Icons.flight_takeoff_rounded),
+        _buildGlassCard(
+          child: _CustomListTile(
+            title: 'Gemini API Key',
+            subtitle: 'Manage your personal API key used to curate smart travel itineraries.',
+            icon: Icons.key_rounded,
+            onTap: () async {
+              final service = TripPlannerService();
+              final currentKey = await service.getApiKey() ?? '';
+              final controller = TextEditingController(text: currentKey);
+              
+              if (mounted) {
+                 _showCustomDialog(
+                   title: 'Gemini API Key',
+                   content: Column(
+                     crossAxisAlignment: CrossAxisAlignment.start,
+                     children: [
+                       const Text(
+                         "Enter your Gemini API Key. This stays directly on your device and is only used to generate trip plans.",
+                         style: TextStyle(color: Colors.white70, fontSize: 14),
+                       ),
+                       const SizedBox(height: 16),
+                       TextField(
+                         controller: controller,
+                         obscureText: true,
+                         style: const TextStyle(color: Colors.white),
+                         decoration: InputDecoration(
+                           hintText: 'AIzaSy...',
+                           hintStyle: const TextStyle(color: Colors.white30),
+                           filled: true,
+                           fillColor: Colors.white.withOpacity(0.05),
+                           border: OutlineInputBorder(
+                             borderRadius: BorderRadius.circular(16),
+                             borderSide: BorderSide.none,
+                           ),
+                         ),
+                       ),
+                     ],
+                   ),
+                   onSave: () async {
+                     if (controller.text.trim().isEmpty) {
+                        await service.clearApiKey();
+                     } else {
+                        await service.saveApiKey(controller.text.trim());
+                     }
+                     if (mounted) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                           const SnackBar(content: Text('API Key updated!'))
+                        );
+                     }
+                   },
+                 );
+              }
+            },
           ),
         ),
       ],

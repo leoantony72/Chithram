@@ -270,7 +270,10 @@ class _MapPageState extends State<MapPage> {
                       width: 12, 
                       height: 12,
                       child: GestureDetector(
-                         onTap: () => context.push('/viewer', extra: item),
+                         onTap: () => context.push('/viewer', extra: {
+                            'item': item,
+                            'items': _geoItems,
+                         }),
                          child: Container(
                             decoration: BoxDecoration(
                               color: item.type == GalleryItemType.local ? const Color(0xFF4285F4) : Colors.orangeAccent,
@@ -454,6 +457,12 @@ class _MapPageState extends State<MapPage> {
                             return ThumbnailWidget(
                                item: item,
                                heroTagPrefix: 'map_grid_${item.id}',
+                               onTap: () {
+                                 context.push('/viewer', extra: {
+                                   'item': item,
+                                   'items': _visibleItems,
+                                 });
+                               },
                             );
                           },
                           childCount: _visibleItems.length,

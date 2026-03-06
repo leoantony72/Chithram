@@ -10,13 +10,24 @@ class GalleryItem {
 
   final int version; // <--- Tracks manual refreshes/edits
   bool? _localFavoriteOverride;
+  int? _localDurationOverride;
   
-  GalleryItem.local(this.local, {bool? isFavorite, this.version = 0}) : type = GalleryItemType.local, remote = null, _localFavoriteOverride = isFavorite;
-  GalleryItem.remote(this.remote, {this.version = 0}) : type = GalleryItemType.remote, local = null, _localFavoriteOverride = null;
+  GalleryItem.local(this.local, {bool? isFavorite, int? duration, this.version = 0}) 
+    : type = GalleryItemType.local, 
+      remote = null, 
+      _localFavoriteOverride = isFavorite,
+      _localDurationOverride = duration;
 
-  GalleryItem copyWith({int? version, bool? isFavorite}) {
+  GalleryItem.remote(this.remote, {this.version = 0}) : type = GalleryItemType.remote, local = null, _localFavoriteOverride = null, _localDurationOverride = null;
+
+  GalleryItem copyWith({int? version, bool? isFavorite, int? duration}) {
      if (type == GalleryItemType.local) {
-        return GalleryItem.local(local, isFavorite: isFavorite ?? _localFavoriteOverride, version: version ?? this.version);
+        return GalleryItem.local(
+          local, 
+          isFavorite: isFavorite ?? _localFavoriteOverride, 
+          duration: duration ?? _localDurationOverride,
+          version: version ?? this.version
+        );
      } else {
         final newItem = GalleryItem.remote(remote, version: version ?? this.version);
         if (isFavorite != null) newItem.isFavorite = isFavorite;
@@ -39,6 +50,14 @@ class GalleryItem {
       return _localFavoriteOverride ?? local!.isFavorite;
     }
     return remote?.isFavorite ?? false;
+  }
+  
+  Duration get duration {
+    if (type == GalleryItemType.local) {
+      if (_localDurationOverride != null) return Duration(seconds: _localDurationOverride!);
+      return local?.videoDuration ?? Duration.zero;
+    }
+    return Duration(seconds: remote?.duration ?? 0);
   }
 
   set isFavorite(bool value) {

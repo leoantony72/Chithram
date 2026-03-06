@@ -213,16 +213,17 @@ class BackupService {
       
       // 3. Generate Thumbnails
       print('BackupService: Generating thumbnails for $imageId...');
-      final thumb256Bytes = await asset.thumbnailDataWithSize(const ThumbnailSize(256, 256), quality: 80);
-      final thumb64Bytes = await asset.thumbnailDataWithSize(const ThumbnailSize(64, 64), quality: 60);
+      Uint8List? thumb256Bytes = await asset.thumbnailDataWithSize(const ThumbnailSize(256, 256), quality: 80);
+      Uint8List? thumb64Bytes = await asset.thumbnailDataWithSize(const ThumbnailSize(64, 64), quality: 60);
 
       // Note: If thumbnail generation fails for videos (e.g. MOV), we might want to skip or upload without thumbnails.
       // For now, valid requirement is thumbnails must exist.
       if (thumb256Bytes == null || thumb64Bytes == null) {
-        print('BackupService: Failed to generate thumbnails for ${asset.id} (256: ${thumb256Bytes?.length}, 64: ${thumb64Bytes?.length})');
-        return;
+        print('BackupService: Warning: Could not generate thumbnails for ${asset.id}. Using empty placeholders to allow backup to continue.');
+        thumb256Bytes ??= Uint8List(0);
+        thumb64Bytes ??= Uint8List(0);
       }
-      print('BackupService: Thumbnails generated. 256px: ${thumb256Bytes.length} bytes, 64px: ${thumb64Bytes.length} bytes.');
+      print('BackupService: Thumbnails generated. 256px: ${thumb256Bytes?.length} bytes, 64px: ${thumb64Bytes?.length} bytes.');
       
       // 4. Get Presigned URLs
       final variants = ['original', 'thumb_1024', 'thumb_256', 'thumb_64'];
@@ -242,8 +243,8 @@ class BackupService {
       final uploads = [
         _encryptAndUpload(urls['original']!, fileBytes, masterKey, 'original'),
         if (thumb1024Bytes != null) _encryptAndUpload(urls['thumb_1024']!, thumb1024Bytes, masterKey, 'thumb_1024'),
-        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
-        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
+        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes!, masterKey, 'thumb_256'),
+        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes!, masterKey, 'thumb_64'),
       ];
 
       final results = await Future.wait(uploads);
@@ -263,6 +264,7 @@ class BackupService {
         checksum: checksum,
         width: asset.width,
         height: asset.height,
+        duration: asset.videoDuration.inSeconds,
         albumName: albumName,
       );
 
@@ -386,6 +388,7 @@ class BackupService {
     required String checksum,
     required int width,
     required int height,
+    int? duration,
     String? albumName,
   }) async {
     try {
@@ -408,6 +411,7 @@ class BackupService {
         'longitude': latlng?.longitude ?? 0.0,
         'mime_type': mimeType ?? '',
         'album': albumName ?? '',
+        'duration': duration ?? 0,
         'is_deleted': false,
       });
 
@@ -479,8 +483,16 @@ class BackupService {
           final thumb64 = img.copyResizeCropSquare(decodedImage, size: 64);
           thumb64Bytes = Uint8List.fromList(img.encodeJpg(thumb64, quality: 60));
         } else {
-             print('BackupService: Could not decode image natively for thumbnails, it may be a video. Skipping thumbnail generation.');
-             continue; // Ente backend logic currently relies on having thumbs, handle differently if supporting videos
+             print('BackupService: Could not decode image natively (might be a video). Attempting upload without native thumbnails.');
+             // For videos/unsupported formats, we still want to try uploading the original
+             // The backend will have to handle missing thumbnails or we can improve this later with a video_thumbnail plugin
+             width = 0;
+             height = 0;
+             
+             // Create empty/dummy thumbnails for now to satisfy the backend registration if needed
+             // In a real production app, we'd use a video thumbnail generator here
+             thumb256Bytes = Uint8List(0);
+             thumb64Bytes = Uint8List(0);
         }
 
         final variants = ['original', 'thumb_256', 'thumb_64'];
@@ -493,8 +505,8 @@ class BackupService {
 
         final uploads = [
           _encryptAndUpload(urls['original']!, fileBytes, masterKey, 'original'),
-          _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
-          _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
+          _encryptAndUpload(urls['thumb_256']!, thumb256Bytes!, masterKey, 'thumb_256'),
+          _encryptAndUpload(urls['thumb_64']!, thumb64Bytes!, masterKey, 'thumb_64'),
         ];
 
         final results = await Future.wait(uploads);
@@ -933,8 +945,8 @@ class BackupService {
       // Encrypt and upload
       final uploads = [
         _encryptAndUpload(urls['original']!, bytes, masterKey, 'original'),
-        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
-        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
+        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes!, masterKey, 'thumb_256'),
+        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes!, masterKey, 'thumb_64'),
       ];
 
       final results = await Future.wait(uploads);
@@ -1019,8 +1031,8 @@ class BackupService {
       final uploads = [
         _encryptAndUpload(urls['original']!, bytes, masterKey, 'original'),
         _encryptAndUpload(urls['thumb_1024']!, thumb1024Bytes, masterKey, 'thumb_1024'),
-        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes, masterKey, 'thumb_256'),
-        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes, masterKey, 'thumb_64'),
+        _encryptAndUpload(urls['thumb_256']!, thumb256Bytes!, masterKey, 'thumb_256'),
+        _encryptAndUpload(urls['thumb_64']!, thumb64Bytes!, masterKey, 'thumb_64'),
       ];
 
       final results = await Future.wait(uploads);

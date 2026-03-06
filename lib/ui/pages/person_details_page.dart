@@ -13,6 +13,7 @@ import '../../services/auth_service.dart';
 import '../../services/crypto_service.dart';
 import '../../services/backup_service.dart';
 import '../../models/remote_image.dart';
+import '../widgets/thumbnail_widget.dart';
 import '../widgets/section_header_delegate.dart';
 
 class PersonDetailsPage extends StatefulWidget {
@@ -45,48 +46,72 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
   Future<void> _loadPersonAssets() async {
     final paths = await _dbService.getPhotoPathsForCluster(widget.personId);
     
-    final List<io.File> localFiles = [];
-    final List<String> cloudIds = [];
+    // Access provider once
+    final provider = Provider.of<PhotoProvider>(context, listen: false);
+    final List<GalleryItem> items = [];
 
     for (final p in paths) {
       if (p.startsWith('cloud_')) {
-        cloudIds.add(p.substring(6));
+        final cloudId = p.substring(6);
+        // Find existing remote item or create temporary one
+        final remote = provider.remoteImages.firstWhereOrNull((r) => r.imageId == cloudId);
+        if (remote != null) {
+          items.add(GalleryItem.remote(remote));
+        } else {
+          // If not in provider yet, we'll mark it as a "placeholder" remote
+          items.add(GalleryItem.remote(RemoteImage(
+              imageId: cloudId, 
+              userId: '', 
+              width: 0, 
+              height: 0, 
+              originalUrl: '', 
+              thumb1024Url: '', 
+              thumb256Url: '', 
+              thumb64Url: '',
+              mimeType: '', 
+              size: 0
+          )));
+        }
       } else {
-        if (!kIsWeb) {
-           final f = io.File(p);
-           if (await f.exists()) {
-             localFiles.add(f);
-           }
+        // Find local item in provider
+        final asset = provider.allItems.firstWhereOrNull((item) {
+          if (item.type != GalleryItemType.local || item.local == null) return false;
+          final title = item.local!.title;
+          return title != null && title.isNotEmpty && p.endsWith('/$title');
+        });
+        if (asset != null) {
+          items.add(asset);
+        } else if (!kIsWeb) {
+          // Fallback if not in provider yet (unlikely for indexed faces)
+          final f = io.File(p);
+          if (await f.exists()) {
+             // We don't have the AssetEntity, so we can't easily make a GalleryItem.local
+             // This case is rare if the face index is in sync.
+          }
         }
       }
     }
 
-    // Group local files by Date
-    final Map<DateTime, List<dynamic>> groups = {};
-    
-    for (final f in localFiles) {
-      DateTime date;
-      try {
-        date = await f.lastModified();
-      } catch (_) {
-        date = DateTime.now();
-      }
+    // Sort all by date descending
+    items.sort((a, b) => b.date.compareTo(a.date));
+
+    // Group by Date for UI headers
+    final Map<DateTime, List<GalleryItem>> groups = {};
+    for (final item in items) {
+      final date = item.date;
       final key = DateTime(date.year, date.month, date.day);
       if (!groups.containsKey(key)) groups[key] = [];
-      groups[key]!.add(f);
+      groups[key]!.add(item);
     }
 
-    final List<_FileGroup> sorted = groups.entries.map((e) => _FileGroup(e.key, e.value)).toList();
-    sorted.sort((a, b) => b.date.compareTo(a.date));
-
-    // Append a massive group for scattered Cloud Photos
-    if (cloudIds.isNotEmpty) {
-       sorted.insert(0, _FileGroup(DateTime.now(), cloudIds, isCloud: true));
-    }
+    final List<_FileGroup> sortedGroups = groups.entries
+        .map((e) => _FileGroup(e.key, e.value))
+        .toList();
+    sortedGroups.sort((a, b) => b.date.compareTo(a.date));
 
     if (mounted) {
       setState(() {
-        _groupedFiles = sorted;
+        _groupedFiles = sortedGroups;
         _isLoading = false;
       });
     }
@@ -169,22 +194,10 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
               ? const Center(child: Text('No photos found.'))
               : Consumer<PhotoProvider>(
                   builder: (context, provider, _) {
-                    // Build a flat list of all local GalleryItems for this person
-                    // so swiping works across the full set in AssetViewerPage.
-                    final List<GalleryItem> allLocalItems = [];
+                    // Collect all items in this cluster for viewer navigation
+                    final List<GalleryItem> allItems = [];
                     for (final group in _groupedFiles) {
-                      if (!group.isCloud) {
-                        for (final f in group.items) {
-                          final file = f as io.File;
-                          final asset = provider.allItems.firstWhereOrNull(
-                            (item) =>
-                                item.type == GalleryItemType.local &&
-                                (item.local?.relativePath != null &&
-                                    file.path.endsWith(item.local!.relativePath!)),
-                          );
-                          if (asset != null) allLocalItems.add(asset);
-                        }
-                      }
+                      allItems.addAll(group.items);
                     }
 
                     return CustomScrollView(
@@ -207,65 +220,21 @@ class _PersonDetailsPageState extends State<PersonDetailsPage> {
                                       crossAxisSpacing: 4,
                                       mainAxisSpacing: 4,
                                     ),
-                              delegate: SliverChildBuilderDelegate(
-                                (context, index) {
-                                  final item = group.items[index];
-                                  if (group.isCloud) {
-                                    return _CloudPhotoTile(imageId: item as String);
-                                  } else {
-                                    final file = item as io.File;
-                                    if (kIsWeb) return const SizedBox.shrink();
-
-                                    // Find the matching AssetEntity so we can open AssetViewerPage
-                                    final galleryItem = provider.allItems.firstWhereOrNull(
-                                      (gi) =>
-                                          gi.type == GalleryItemType.local &&
-                                          gi.local?.relativePath != null &&
-                                          file.path.endsWith(gi.local!.relativePath!),
-                                    );
-
-                                    return GestureDetector(
+                                delegate: SliverChildBuilderDelegate(
+                                  (context, index) {
+                                    final item = group.items[index];
+                                    return ThumbnailWidget(
+                                      item: item,
                                       onTap: () {
-                                        if (galleryItem != null) {
-                                          context.push('/viewer', extra: {
-                                            'item': galleryItem,
-                                            'items': allLocalItems.isNotEmpty
-                                                ? allLocalItems
-                                                : null,
-                                          });
-                                        }
+                                        context.push('/viewer', extra: {
+                                          'item': item,
+                                          'items': allItems.isNotEmpty ? List<GalleryItem>.from(allItems) : null,
+                                        });
                                       },
-                                      child: Stack(
-                                        fit: StackFit.expand,
-                                        children: [
-                                          Image.file(
-                                            file,
-                                            fit: BoxFit.cover,
-                                            cacheWidth: 600,
-                                            filterQuality: FilterQuality.high,
-                                            errorBuilder: (context, error, stackTrace) => Container(
-                                              color: Colors.grey[900],
-                                              child: const Center(
-                                                child: Icon(Icons.broken_image, color: Colors.white24, size: 24),
-                                              ),
-                                            ),
-                                          ),
-                                          Positioned(
-                                            bottom: 4, right: 4,
-                                            child: Container(
-                                              padding: const EdgeInsets.all(4),
-                                              decoration: const BoxDecoration(
-                                                  color: Colors.black54, shape: BoxShape.circle),
-                                              child: const Icon(Icons.sd_storage, size: 16, color: Colors.white),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
                                     );
-                                  }
-                                },
-                                childCount: group.items.length,
-                              ),
+                                  },
+                                  childCount: group.items.length,
+                                ),
                             ),
                           ),
                         ]
@@ -400,9 +369,9 @@ class _CoverPhotoSelectorSheetState extends State<_CoverPhotoSelectorSheet> {
                                   ),
                                 )
                               : Container(
-                              color: Colors.grey[800],
-                              child: const Icon(Icons.person, color: Colors.white54),
-                            ),
+                                color: Colors.grey[800],
+                                child: const Icon(Icons.person, color: Colors.white54),
+                              ),
                     ),
                   );
                 },
@@ -417,84 +386,6 @@ class _CoverPhotoSelectorSheetState extends State<_CoverPhotoSelectorSheet> {
 
 class _FileGroup {
   final DateTime date;
-  final List<dynamic> items;
-  final bool isCloud;
-  _FileGroup(this.date, this.items, {this.isCloud = false});
+  final List<GalleryItem> items;
+  _FileGroup(this.date, this.items);
 }
-
-class _CloudPhotoTile extends StatefulWidget {
-  final String imageId;
-  const _CloudPhotoTile({required this.imageId});
-  @override
-  State<_CloudPhotoTile> createState() => _CloudPhotoTileState();
-}
-
-class _CloudPhotoTileState extends State<_CloudPhotoTile> {
-  RemoteImage? _remoteImage;
-  Uint8List? _thumbBytes;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-     final session = await AuthService().loadSession();
-     if (session == null) return;
-     final userId = session['username'] as String;
-     final masterKeyBytes = session['masterKey'] as Uint8List;
-     final key = SecureKey.fromList(CryptoService().sodium, masterKeyBytes);
-
-     final r = await BackupService().fetchSingleRemoteImage(userId, widget.imageId);
-     if (r != null && mounted) {
-        setState(() => _remoteImage = r);
-        var url = r.thumb256Url.isEmpty ? r.thumb64Url : r.thumb256Url;
-        if (url.isNotEmpty) {
-           final tb = await BackupService().fetchAndDecryptFromUrl(url, key);
-           if (mounted) setState(() => _thumbBytes = tb);
-        }
-     }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_thumbBytes == null) {
-        return Container(
-            color: Colors.grey[900], 
-            child: const Center(child: CircularProgressIndicator(strokeWidth: 2))
-        );
-    }
-    return GestureDetector(
-       onTap: () {
-          if (_remoteImage != null) {
-            final galleryItem = GalleryItem.remote(_remoteImage!);
-            context.push('/viewer', extra: galleryItem);
-          }
-       },
-       child: Stack(
-          fit: StackFit.expand,
-          children: [
-             Image.memory(
-                _thumbBytes!, 
-                fit: BoxFit.cover, 
-                filterQuality: FilterQuality.high,
-                errorBuilder: (context, error, stackTrace) => Container(
-                   color: Colors.grey[900], 
-                   child: const Center(child: Icon(Icons.broken_image, color: Colors.white24, size: 24))
-                ),
-             ),
-             Positioned(
-                bottom: 4, right: 4,
-                child: Container(
-                   padding: const EdgeInsets.all(4),
-                   decoration: BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                   child: const Icon(Icons.cloud, size: 16, color: Colors.white),
-                ),
-             ),
-          ],
-       )
-    );
-  }
-}
-

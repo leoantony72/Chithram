@@ -27,6 +27,7 @@ import '../models/remote_image.dart';
 import '../services/semantic/semantic_service.dart';
 import '../services/semantic/indexing_worker.dart';
 import '../utils/metadata_utils.dart';
+import '../services/exif_writer.dart';
 
 class PhotoProvider with ChangeNotifier {
   List<AssetPathEntity> _paths = [];
@@ -183,6 +184,7 @@ class PhotoProvider with ChangeNotifier {
         'id': asset.id,
         'title': asset.title ?? '',
         'type_int': asset.typeInt,
+        'duration': asset.duration,
         'width': asset.width,
         'height': asset.height,
         'create_dt': asset.createDateSecond,
@@ -382,90 +384,94 @@ class PhotoProvider with ChangeNotifier {
         );
 
         _paths = await PhotoManager.getAssetPathList(type: RequestType.common, filterOption: option);
-        notifyListeners();
+        if (_paths.isEmpty) return;
+        
+        final totalCount = await _paths.first.assetCountAsync;
+        final sqliteCount = await DatabaseService().getGalleryIndexCount();
+        
+        // Phase 1: FAST UI UNBLOCK (If not hydrated)
+        if (!_isOfflineHydrated && totalCount > 0) {
+            final int initialFetch = totalCount < 500 ? totalCount : 500;
+            _allAssets = await _paths.first.getAssetListRange(start: 0, end: initialFetch);
+            await _groupAssets();
+            notifyListeners(); 
+        }
 
-        if (_paths.isNotEmpty) {
-          final totalCount = await _paths.first.assetCountAsync;
-          List<AssetEntity> backgroundLoadedEntities = [];
-          
-          if (totalCount > 0) {
-             // If we didn't have a cache (first launch ever or cleared data)
-             if (!_isOfflineHydrated) {
-                // Fetch first 500 immediately to unblock the user's splash screen
-                final int initialFetch = totalCount < 500 ? totalCount : 500;
-                _allAssets = await _paths.first.getAssetListRange(start: 0, end: initialFetch);
-                await _groupAssets();
-                notifyListeners(); 
-             }
+        // Phase 2: INCREMENTAL BACKGROUND SYNC
+        // Check if sync is truly needed to avoid battery drain
+        String? latestIdInDb;
+        if (sqliteCount > 0) {
+            final firstItem = await DatabaseService().getGalleryIndex(limit: 1, offset: 0);
+            if (firstItem.isNotEmpty) latestIdInDb = firstItem.first['id'];
+        }
+        final latestAssetId = (await _paths.first.getAssetListRange(start: 0, end: 1)).firstOrNull?.id;
+        final isFavSynced = await DatabaseService().getBackupSetting('fav_sync_v2') == 'true';
 
-             // Background: Cache ALL native OS items in SQLite so next launch is instant (limit memory during processing chunking)
-             final sqliteCount = await DatabaseService().getGalleryIndexCount();
-             
-             // Check if the most recent asset ID has changed (heuristic for sync needed)
-             String? latestIdInDb;
-             if (sqliteCount > 0) {
-               final firstItem = await DatabaseService().getGalleryIndex(limit: 1, offset: 0);
-               if (firstItem.isNotEmpty) latestIdInDb = firstItem.first['id'];
-             }
-             final latestAssetId = (await _paths.first.getAssetListRange(start: 0, end: 1)).firstOrNull?.id;
+        if (totalCount != sqliteCount || force || latestIdInDb != latestAssetId || !isFavSynced) {
+            debugPrint("PhotoProvider: Starting incremental OS sync (OS: $totalCount, DB: $sqliteCount)...");
+            
+            final existingFavs = await DatabaseService().getFavoritesIds();
+            const int chunkSize = 1000;
+            int processed = 0;
+            List<AssetEntity> allEntitiesForFinalHydration = [];
+            
+            while (processed < totalCount) {
+                final int fetchC = (processed + chunkSize < totalCount) ? chunkSize : (totalCount - processed);
+                final entities = await _paths.first.getAssetListRange(start: processed, end: processed + fetchC);
+                
+                allEntitiesForFinalHydration.addAll(entities);
 
-             if (totalCount != sqliteCount || force || latestIdInDb != latestAssetId) {
-                 // Fetch existing favorites to preserve them during re-index
-                 final existingFavs = await DatabaseService().getFavoritesIds();
-                 await DatabaseService().clearGalleryIndex();
+                // Prepare batch insert objects
+                final List<Map<String, dynamic>> cacheObjects = entities.map((e) => {
+                    'id': e.id,
+                    'title': e.title ?? '',
+                    'type_int': e.typeInt,
+                    'duration': e.duration,
+                    'width': e.width,
+                    'height': e.height,
+                    'create_dt': e.createDateSecond,
+                    'modify_dt': e.modifiedDateSecond,
+                    'relative_path': '',
+                    'is_favorite': existingFavs.contains(e.id) ? 1 : (e.isFavorite ? 1 : 0)
+                }).toList();
 
-                 // Chunk size prevents the Platform Channel from stuttering the main UI thread during sync
-                 const int chunkSize = 1000;
-                 int processed = 0;
-                 
-                 while (processed < totalCount) {
-                    final int fetchC = (processed + chunkSize < totalCount) ? chunkSize : (totalCount - processed);
-                    final entities = await _paths.first.getAssetListRange(start: processed, end: processed + fetchC);
-                    if (!_isOfflineHydrated) {
-                        backgroundLoadedEntities.addAll(entities);
+                await DatabaseService().saveGalleryIndex(cacheObjects);
+                
+                // LIVE UI UPDATE: 
+                // We update the UI for every chunk during the first batch (processed == 0)
+                // and then every few chunks to avoid UI flickering while ensuring responsiveness.
+                if (!_isOfflineHydrated || processed == 0 || (processed ~/ chunkSize) % 5 == 0) {
+                    _allAssets = List.from(allEntitiesForFinalHydration);
+                    // For large galleries, _groupAssets can be slow. 
+                    // We only re-group if we've found NEW items or if we are still in the first 10k.
+                    if (allEntitiesForFinalHydration.length != sqliteCount || processed < 10000) {
+                        await _groupAssets();
+                        notifyListeners();
                     }
+                }
 
-                    final List<Map<String, dynamic>> cacheObjects = entities.map((e) => {
-                        'id': e.id,
-                        'title': e.title ?? '',
-                        'type_int': e.typeInt,
-                        'width': e.width,
-                        'height': e.height,
-                        'create_dt': e.createDateSecond,
-                        'modify_dt': e.modifiedDateSecond,
-                        'relative_path': '',
-                        'is_favorite': existingFavs.contains(e.id) ? 1 : (e.isFavorite ? 1 : 0)
-                    }).toList();
-
-                    await DatabaseService().saveGalleryIndex(cacheObjects);
-                    processed += fetchC;
-
-                    // Yield to the event queue longer to let scroll frames render
-                    await Future.delayed(const Duration(milliseconds: 30));
-                 }
-                 
-                 // Re-group because the background sync might have added items
-                 await _groupAssets();
-                 notifyListeners();
-             }
-    
-                 // If the UI was completely unhydrated on this run (First Launch), instantly hot-swap the UI to the full array to expand the scrollbar
-                 if (!_isOfflineHydrated) {
-                    _allAssets = backgroundLoadedEntities;
-                    _isOfflineHydrated = true;
-                    await _groupAssets();
-                    notifyListeners();
-                    await startLocationScan();
-                    await initThumbnailStats();
-                    // Defer heavy indexing on first launch
-                    Future.delayed(const Duration(seconds: 15), () {
-                       startSemanticIndexing();
-                    });
-                 }
-                 
-                 debugPrint("PhotoProvider: Fully cached $totalCount native OS images into SQLite offline index.");
-             }
-          }
+                processed += fetchC;
+                await Future.delayed(const Duration(milliseconds: 30));
+            }
+            
+            await DatabaseService().setBackupSetting('fav_sync_v2', 'true');
+            
+            // Final Refresh
+            _allAssets = allEntitiesForFinalHydration;
+            _isOfflineHydrated = true;
+            await _groupAssets();
+            notifyListeners();
+            
+            await startLocationScan();
+            await initThumbnailStats();
+            
+            // Kick off indexing shortly after
+            Future.delayed(const Duration(seconds: 10), () {
+                startSemanticIndexing();
+            });
+            
+            debugPrint("PhotoProvider: Incremental OS sync complete for $totalCount items.");
+        }
     } catch (e) {
        debugPrint("Background OS Sync Error: $e");
     }
@@ -563,7 +569,7 @@ class PhotoProvider with ChangeNotifier {
     final List<GalleryItem> unsortedItems = [
       ..._allAssets.map((e) => GalleryItem.local(
         e, 
-        isFavorite: favIds.contains(e.id), 
+        isFavorite: e.isFavorite || favIds.contains(e.id), 
         version: _versionMap[e.id] ?? 0
       )),
       ...uniqueRemote.map((e) => GalleryItem.remote(
@@ -1123,6 +1129,15 @@ class PhotoProvider with ChangeNotifier {
   }
 
   /// Bulk updates the map location coordinates for the selected items.
+  ///
+  /// On Android, writing GPS EXIF requires saving a new MediaStore asset and
+  /// deleting the original, which moves the photo to a different album —
+  /// a destructive side-effect we avoid entirely.
+  ///
+  /// Instead, we persist the location in:
+  ///   1. Our in-memory + disk `locationCache` (instant map/Places update)
+  ///   2. The cloud backend (for remote images)
+  ///   3. Direct EXIF on non-Android platforms where in-place write is safe.
   Future<void> updateLocationForSelected(List<GalleryItem> selectedItems, double lat, double lng) async {
     if (selectedItems.isEmpty) return;
     
@@ -1133,6 +1148,7 @@ class PhotoProvider with ChangeNotifier {
        final session = await AuthService().loadSession();
        final username = session?['username'] as String?;
        
+       // ── 1. Cloud backend update ──────────────────────────────────────────
        if (username != null) {
           final List<String> cloudIdsToUpdate = [];
           for (final item in selectedItems) {
@@ -1149,10 +1165,8 @@ class PhotoProvider with ChangeNotifier {
           if (cloudIdsToUpdate.isNotEmpty) {
              final success = await BackupService().updateRemoteLocation(username, cloudIdsToUpdate, lat, lng);
              if (success) {
-                // Update Runtime Cache
                 for (int i = 0; i < _remoteImages.length; i++) {
                    if (cloudIdsToUpdate.contains(_remoteImages[i].imageId)) {
-                      // Needs mutable mapping since we don't have copyWith
                       final old = _remoteImages[i];
                       _remoteImages[i] = RemoteImage(
                          imageId: old.imageId, userId: old.userId, album: old.album,
@@ -1170,74 +1184,61 @@ class PhotoProvider with ChangeNotifier {
           }
        }
        
-        // Update Local Map Cache for instant UI feedback regardless of backend
-        for (final item in selectedItems) {
-           _locationCache[item.id] = latlong.LatLng(lat, lng);
-           
-           // Persist to EXIF for Local Assets
-           if (item.type == GalleryItemType.local && item.local != null) {
-              try {
-                 final file = await item.local!.file;
-                 if (file != null && await file.exists()) {
-                    final bytes = await file.readAsBytes();
-                    final newBytes = await MetadataUtils.injectGpsMetadata(
-                      imageBytes: bytes,
-                      latitude: lat,
-                      longitude: lng,
-                    );
-                    if (newBytes != null) {
-                      AssetEntity? updatedAsset;
+       // ── 2. In-memory cache ────────────────────────────────────────────────
+       for (final item in selectedItems) {
+          _locationCache[item.id] = latlong.LatLng(lat, lng);
+       }
 
-                      if (!kIsWeb && Platform.isAndroid) {
-                         // Android 10+ Scoped Storage: cannot write directly to gallery files.
-                         // Correct: save modified bytes as a new asset, then delete the original.
-                         final title = item.local!.title ?? "${item.local!.id}.jpg";
-                         final savedAsset = await PhotoManager.editor.saveImage(
-                           newBytes,
-                           title: title,
-                           filename: title,
-                         );
-                         if (savedAsset != null) {
-                           await PhotoManager.editor.deleteWithIds([item.local!.id]);
-                           updatedAsset = savedAsset;
-                           debugPrint("EXIF written via PhotoManager for ${item.id}");
-                         }
-                      } else {
-                         // Windows / other platforms: direct file write works fine
-                         await file.writeAsBytes(newBytes);
-                         debugPrint("EXIF written via direct write for ${item.id}");
-                      }
+       // ── 3. EXIF write ─────────────────────────────────────────────────────
+       if (!kIsWeb && Platform.isAndroid) {
+          // Collect all local Android asset IDs and call writeGpsBatch ONCE.
+          // MediaStore.createWriteRequest() bundles all URIs into a single
+          // system dialog: "Chithram wants to modify N photos" — one tap for all.
+          final localIds = selectedItems
+              .where((i) => i.type == GalleryItemType.local && i.local != null)
+              .map((i) => i.local!.id)
+              .toList();
 
-                      // Update in-memory state so the UI reflects changes instantly
-                      if (updatedAsset != null) {
-                         final aIdx = _allAssets.indexWhere((a) => a.id == item.id);
-                         if (aIdx != -1) _allAssets[aIdx] = updatedAsset;
-                         final giIdx = _allItems.indexWhere((gi) => gi.id == item.id);
-                         if (giIdx != -1) {
-                           _allItems[giIdx] = GalleryItem.local(
-                             updatedAsset,
-                             isFavorite: item.isFavorite,
-                             version: item.version + 1,
-                           );
-                         }
-                         // Remap location cache to the new asset id
-                         _locationCache[updatedAsset.id] = latlong.LatLng(lat, lng);
-                         _locationCache.remove(item.id);
-                      }
-                    }
-                 }
-              } catch (e) {
-                 debugPrint("EXIF write failed for ${item.id}: $e");
-              }
-           }
-         }
+          if (localIds.isNotEmpty) {
+             final bool written = await ExifWriter.writeGpsBatch(
+               mediaIds: localIds,
+               lat: lat,
+               lng: lng,
+             );
+             debugPrint('ExifWriter batch: ${written ? "success" : "cache-only fallback"} for ${localIds.length} item(s)');
+          }
+       } else if (!kIsWeb && !Platform.isIOS) {
+          // Windows/macOS/Linux: direct in-place byte write per item (no dialog needed)
+          for (final item in selectedItems) {
+             if (item.type != GalleryItemType.local || item.local == null) continue;
+             try {
+                final file = await item.local!.file;
+                if (file != null && await file.exists()) {
+                   final bytes = await file.readAsBytes();
+                   final newBytes = await MetadataUtils.injectGpsMetadata(
+                     imageBytes: bytes,
+                     latitude: lat,
+                     longitude: lng,
+                   );
+                   if (newBytes != null) {
+                      await file.writeAsBytes(newBytes);
+                      debugPrint('EXIF GPS written directly for ${item.id}');
+                   }
+                }
+             } catch (e) {
+                debugPrint('EXIF write failed for ${item.id}: $e');
+             }
+          }
+       }
+       // iOS: locationCache + cloud backend only (no file write).
        
-       await _saveLocationCache(); // Persist locally!
+       // ── 3. Persist cache to disk ─────────────────────────────────────────
+       await _saveLocationCache();
        await DatabaseService().invalidateJourneyCache();
-       // Re-trigger Grouping to pass new props down
        _groupAssets();
+       
     } catch (e) {
-       print("Error updating locations: $e");
+       debugPrint("Error updating locations: $e");
     } finally {
        _isLoading = false;
        notifyListeners();

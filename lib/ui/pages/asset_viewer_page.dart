@@ -44,6 +44,12 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
   late List<GalleryItem> _items; 
   bool _isInit = false;
 
+  // ── Swipe-down-to-dismiss ──────────────────────────────────────────────────
+  double _dragOffset = 0.0;    // how far the user has dragged downward
+  bool _isDraggingDown = false;
+  bool _showUI = true;
+  static const double _kDismissThreshold = 120.0;
+
   @override
   void initState() {
     super.initState();
@@ -135,73 +141,6 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.pop(),
-        ),
-        title: Text(
-           _formatDateTime(currentItem.date),
-           style: const TextStyle(
-             color: Colors.white70, 
-             fontSize: 14,
-             shadows: [Shadow(color: Colors.black, blurRadius: 4)]
-           ),
-        ),
-        actions: [
-          // Favorite Toggle
-          IconButton(
-            icon: Icon(
-              currentItem.isFavorite ? Icons.favorite : Icons.favorite_border,
-              color: currentItem.isFavorite ? Colors.redAccent : Colors.white,
-            ),
-            onPressed: () {
-              provider.toggleFavorite(currentItem);
-              // Force local UI refresh if needed, but PhotoProvider.notifyListeners should catch it
-              setState(() {}); 
-            },
-          ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert, color: Colors.white),
-            onSelected: (value) async {
-              if (value == 'About') {
-                _showDetails(context, currentItem);
-              } else if (value == 'ShareWithUser' && currentItem.type == GalleryItemType.remote) {
-                await _showShareWithUserDialog(context, currentItem);
-              }
-            },
-            itemBuilder: (BuildContext context) {
-              return [
-                const PopupMenuItem<String>(
-                  value: 'About',
-                  child: Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.black87),
-                      SizedBox(width: 8),
-                      Text('About'),
-                    ],
-                  ),
-                ),
-                if (currentItem.type == GalleryItemType.remote)
-                  const PopupMenuItem<String>(
-                    value: 'ShareWithUser',
-                    child: Row(
-                      children: [
-                        Icon(Icons.person_add, color: Colors.black87),
-                        SizedBox(width: 8),
-                        Text('Share with user'),
-                      ],
-                    ),
-                  ),
-              ];
-            },
-          ),
-        ],
-      ),
       body: CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.arrowLeft): () {
@@ -219,70 +158,211 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
         },
         child: Focus(
           autofocus: true,
-          child: Stack(
-            children: [
-              ScrollConfiguration(
-                behavior: const _GalleryScrollBehavior(),
-                child: ExtendedImageGesturePageView.builder(
-                  controller: _pageController,
-                  itemCount: _items.length,
-                  onPageChanged: _onPageChanged,
-                  itemBuilder: (context, index) {
-                    final item = _items[index];
-                    return _buildItem(item, index);
-                  },
-                ),
-              ),
-              // Navigation Buttons (Hidden on Android/Touch)
-              if (_currentIndex > 0 && (kIsWeb || !Platform.isAndroid))
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 16.0),
-                    child: IconButton(
-                      onPressed: () {
-                        _pageController.previousPage(
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeInOut,
-                        );
-                      },
-                      icon: const Icon(Icons.arrow_back_ios, color: Colors.white, size: 30),
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black.withOpacity(0.3),
-                        hoverColor: Colors.black.withOpacity(0.5),
-                        padding: const EdgeInsets.all(12),
+          child: GestureDetector(
+            onTap: () {
+              setState(() {
+                _showUI = !_showUI;
+              });
+            },
+            // Swipe-down-to-dismiss — only on mobile touch
+            onVerticalDragStart: (details) {
+              setState(() {
+                _isDraggingDown = true;
+                _dragOffset = 0.0;
+              });
+            },
+            onVerticalDragUpdate: (details) {
+              // Only allow downward drag (positive dy)
+              if (!_isDraggingDown) return;
+              final newOffset = (_dragOffset + details.delta.dy).clamp(0.0, 400.0);
+              setState(() => _dragOffset = newOffset);
+            },
+            onVerticalDragEnd: (details) {
+              final velocity = details.primaryVelocity ?? 0;
+              if (_dragOffset >= _kDismissThreshold || velocity > 600) {
+                // Dismiss
+                context.pop();
+              } else {
+                // Spring back
+                setState(() {
+                  _isDraggingDown = false;
+                  _dragOffset = 0.0;
+                });
+              }
+            },
+            onVerticalDragCancel: () {
+              setState(() {
+                _isDraggingDown = false;
+                _dragOffset = 0.0;
+              });
+            },
+            behavior: HitTestBehavior.deferToChild,
+            child: AnimatedContainer(
+              duration: _isDraggingDown
+                  ? Duration.zero
+                  : const Duration(milliseconds: 250),
+              curve: Curves.easeOutCubic,
+              transform: Matrix4.translationValues(0, _dragOffset, 0),
+              child: Opacity(
+                opacity: (1.0 - _dragOffset / 350.0).clamp(0.4, 1.0),
+                child: Stack(
+                  children: [
+                    ScrollConfiguration(
+                      behavior: const _GalleryScrollBehavior(),
+                      child: ExtendedImageGesturePageView.builder(
+                        controller: _pageController,
+                        itemCount: _items.length,
+                        onPageChanged: _onPageChanged,
+                        itemBuilder: (context, index) {
+                          final item = _items[index];
+                          return _buildItem(item, index, _showUI);
+                        },
                       ),
                     ),
-                  ),
-                ),
-              if (_currentIndex < _items.length - 1 && (kIsWeb || !Platform.isAndroid))
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Padding(
-                    padding: const EdgeInsets.only(right: 16.0),
-                    child: IconButton(
-                      onPressed: () {
-                        _pageController.nextPage(
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeInOut,
-                        );
-                      },
-                      icon: const Icon(Icons.arrow_forward_ios, color: Colors.white, size: 30),
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black.withOpacity(0.3),
-                        hoverColor: Colors.black.withOpacity(0.5),
-                        padding: const EdgeInsets.all(12),
+                    // Navigation Buttons (Hidden on Android/Touch)
+                    if (_currentIndex > 0 && (kIsWeb || !Platform.isAndroid))
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 16.0),
+                          child: IconButton(
+                            onPressed: () {
+                              _pageController.previousPage(
+                                duration: const Duration(milliseconds: 300),
+                                curve: Curves.easeInOut,
+                              );
+                            },
+                            icon: const Icon(Icons.arrow_back_ios, color: Colors.white, size: 30),
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.black.withOpacity(0.3),
+                              hoverColor: Colors.black.withOpacity(0.5),
+                              padding: const EdgeInsets.all(12),
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ),
+                    if (_currentIndex < _items.length - 1 && (kIsWeb || !Platform.isAndroid))
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 16.0),
+                          child: IconButton(
+                            onPressed: () {
+                              _pageController.nextPage(
+                                duration: const Duration(milliseconds: 300),
+                                curve: Curves.easeInOut,
+                              );
+                            },
+                            icon: const Icon(Icons.arrow_forward_ios, color: Colors.white, size: 30),
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.black.withOpacity(0.3),
+                              hoverColor: Colors.black.withOpacity(0.5),
+                              padding: const EdgeInsets.all(12),
+                            ),
+                          ),
+                        ),
+                      ),
 
-              // Modern Bottom Action Bar
-              Align(
-                alignment: Alignment.bottomCenter,
-                child: _buildBottomActions(context, currentItem, provider),
+                    // Modern Bottom Action Bar
+                    Align(
+                      alignment: Alignment.bottomCenter,
+                      child: AnimatedSlide(
+                        offset: _showUI ? Offset.zero : const Offset(0, 1.5),
+                        duration: const Duration(milliseconds: 200),
+                        child: AnimatedOpacity(
+                          opacity: _showUI ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 200),
+                          child: IgnorePointer(
+                            ignoring: !_showUI,
+                            child: _buildBottomActions(context, currentItem, provider),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // Floating Modern App Bar
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: AnimatedOpacity(
+                        opacity: _showUI ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 200),
+                        child: IgnorePointer(
+                          ignoring: !_showUI,
+                          child: Container(
+                            padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
+                            child: AppBar(
+                              backgroundColor: Colors.transparent,
+                              elevation: 0,
+                              iconTheme: const IconThemeData(color: Colors.white),
+                              leading: IconButton(
+                                icon: const Icon(Icons.arrow_back),
+                                onPressed: () => context.pop(),
+                              ),
+                              title: Text(
+                                _formatDateTime(currentItem.date),
+                                style: const TextStyle(
+                                  color: Colors.white70, 
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                  shadows: [Shadow(color: Colors.black, blurRadius: 4)]
+                                ),
+                              ),
+                              actions: [
+                                IconButton(
+                                  icon: Icon(
+                                    currentItem.isFavorite ? Icons.favorite : Icons.favorite_border,
+                                    color: currentItem.isFavorite ? Colors.redAccent : Colors.white,
+                                  ),
+                                  onPressed: () {
+                                    provider.toggleFavorite(currentItem);
+                                    setState(() {}); 
+                                  },
+                                ),
+                                PopupMenuButton<String>(
+                                  icon: const Icon(Icons.more_vert, color: Colors.white),
+                                  onSelected: (value) async {
+                                    if (value == 'About') {
+                                      _showDetails(context, currentItem);
+                                    } else if (value == 'ShareWithUser' && currentItem.type == GalleryItemType.remote) {
+                                      await _showShareWithUserDialog(context, currentItem);
+                                    }
+                                  },
+                                  itemBuilder: (BuildContext context) => [
+                                    const PopupMenuItem(
+                                      value: 'About',
+                                      child: Row(
+                                        children: [
+                                          Icon(Icons.info_outline, color: Colors.black87),
+                                          SizedBox(width: 8),
+                                          Text('About'),
+                                        ],
+                                      ),
+                                    ),
+                                    if (currentItem.type == GalleryItemType.remote)
+                                      const PopupMenuItem(
+                                        value: 'ShareWithUser',
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.person_add, color: Colors.black87),
+                                            SizedBox(width: 8),
+                                            Text('Share with user'),
+                                          ],
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -291,7 +371,8 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
 
   Widget _buildBottomActions(BuildContext context, GalleryItem item, PhotoProvider provider) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 24, left: 24, right: 24),
+      margin: const EdgeInsets.only(bottom: 20, left: 24, right: 24),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       height: 64,
       decoration: BoxDecoration(
         color: const Color(0xFF1E1E1E),
@@ -506,13 +587,13 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
     }
   }
   
-  Widget _buildItem(GalleryItem item, int index) {
+  Widget _buildItem(GalleryItem item, int index, bool showUI) {
     final isActive = index == _currentIndex;
 
     if (item.type == GalleryItemType.local) {
        final asset = item.local!;
        if (asset.type == AssetType.video) {
-         return VideoViewer(asset: asset, isActive: isActive);
+         return VideoViewer(asset: asset, assetIsActive: isActive, showUI: showUI);
        }
        return PhotoViewer(asset: asset, isActive: isActive);
     } else {

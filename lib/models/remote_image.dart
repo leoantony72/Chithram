@@ -17,6 +17,7 @@ class RemoteImage {
   final DateTime? modifiedAt;
   final bool isDeleted;
   bool isFavorite;
+  final int duration; // in seconds
 
   RemoteImage({
     required this.imageId,
@@ -37,6 +38,7 @@ class RemoteImage {
     this.modifiedAt,
     this.isDeleted = false,
     this.isFavorite = false,
+    this.duration = 0,
   });
 
   factory RemoteImage.fromJson(Map<String, dynamic> json) {
@@ -63,6 +65,7 @@ class RemoteImage {
           : null,
       isDeleted: json['is_deleted'] == true || json['is_deleted'] == 1,
       isFavorite: json['is_favorite'] == true || json['is_favorite'] == 1,
+      duration: json['duration'] ?? 0,
     );
   }
 
@@ -86,6 +89,7 @@ class RemoteImage {
       'modified_at': modifiedAt?.toIso8601String(),
       'is_deleted': isDeleted,
       'is_favorite': isFavorite,
+      'duration': duration,
     };
   }
 }

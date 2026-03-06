@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:image/image.dart' as img;
@@ -123,6 +124,12 @@ class ThumbnailCache {
   Future<File?> getConvertedHighResFile(AssetEntity entity) async {
     if (kIsWeb) return null;
     
+    // On Android, iOS, and macOS, we don't need to convert to JPEG because they 
+    // support HEIC natively in the UI. We only need this fallback for Windows/Linux.
+    if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+       return null; 
+    }
+
     if (!_isInitialized) {
        await init();
     } else if (!_initCompleter.isCompleted) {
@@ -281,8 +288,15 @@ class ThumbnailCache {
     return null;
   }
   
+  // Assets that failed with PlatformException (unsupported codec, corrupt file, etc.)
+  // We blacklist them per-session to avoid spamming retries and log noise.
+  final Set<String> _failedAssets = {};
+
   // The main method widgets should use
   Future<Uint8List?> getThumbnail(AssetEntity entity) async {
+    // 0. Skip permanently-failed assets (e.g. unsupported video codecs)
+    if (_failedAssets.contains(entity.id)) return null;
+
     // 1. Memory Check (Fastest, Synchronous-like access)
     final memBytes = getMemory(entity.id);
     if (memBytes != null) return memBytes;
@@ -301,14 +315,11 @@ class ThumbnailCache {
         final diskBytes = await file.readAsBytes();
         if (diskBytes.isNotEmpty) {
            putMemory(entity.id, diskBytes);
-           // debugPrint("Disk HIT for ${entity.id}");
            return diskBytes;
         }
       } catch (e) {
         debugPrint("Error reading thumbnail from disk: $e");
       }
-    } else {
-        // debugPrint("Disk MISS for ${entity.id}");
     }
 
     // 3. Generate from System
@@ -326,6 +337,11 @@ class ThumbnailCache {
         if (file != null) _saveToDisk(file, bytes); 
         return bytes;
       }
+    } on PlatformException catch (e) {
+      // Unsupported video codec, corrupt file, etc. — blacklist so we
+      // don't spam retries or fill logs with the same error repeatedly.
+      _failedAssets.add(entity.id);
+      debugPrint("Thumbnail unsupported for ${entity.id} (${entity.type}): ${e.code}");
     } catch (e) {
        debugPrint("Error generating thumbnail: $e");
     }

@@ -65,7 +65,7 @@ class _AlbumPickerDialogState extends State<AlbumPickerDialog> {
                 padding: const EdgeInsets.only(top: 8.0, bottom: 4.0, left: 16.0),
                 child: Text("DEVICE FOLDERS", style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
               ),
-              Expanded(
+              Flexible(
                 child: ListView.builder(
                   shrinkWrap: true,
                   itemCount: widget.localAlbums.length,

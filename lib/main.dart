@@ -23,12 +23,20 @@ import 'ui/pages/image_edit_page.dart';
 import 'ui/pages/shared_page.dart';
 import 'ui/pages/shared_viewer_page.dart';
 import 'ui/pages/user_profile_page.dart';
+import 'ui/pages/trip_planner_page.dart';
 import 'services/share_service.dart';
+import 'services/api_config.dart';
 import 'screens/auth_screen.dart';
 import 'models/gallery_item.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Load the user-saved server IP BEFORE any network call is made.
+  // Without this await, AuthService.login() races against SharedPreferences
+  // and falls back to the hardcoded stale IP.
+  await ApiConfig().init();
+
   // Increase ImageCache to 500MB to allow "Screen Nail" pre-caching 
   // without constant eviction during swiping.
   PaintingBinding.instance.imageCache.maximumSizeBytes = 500 * 1024 * 1024;
@@ -130,6 +138,19 @@ final GoRouter _router = GoRouter(
       builder: (context, state) {
         final city = state.uri.queryParameters['city']!;
         return PlaceGridPage(city: city);
+      },
+    ),
+
+    GoRoute(
+      path: '/trip_planner',
+      builder: (context, state) {
+        final args = state.extra as Map<String, dynamic>;
+        return TripPlannerPage(
+          city: args['city'] as String,
+          timeCapsuleInfo: args['timeCapsuleInfo'] as String,
+          memoryCountInfo: args['memoryCountInfo'] as String,
+          placesVisited: args['placesVisited'] as List<String>,
+        );
       },
     ),
 

@@ -11,6 +11,7 @@ import '../../models/gallery_item.dart';
 import '../widgets/section_header_delegate.dart';
 import '../widgets/thumbnail_widget.dart';
 import '../widgets/draggable_scroll_icon.dart';
+import '../widgets/gallery_scroll_physics.dart';
 
 class AlbumDetailsPage extends StatefulWidget {
   final AssetPathEntity? album;
@@ -145,9 +146,15 @@ class _AlbumDetailsPageState extends State<AlbumDetailsPage> {
                   backgroundColor: Colors.grey[900]!.withOpacity(0.8),
                   onDragStart: () => _isFastScrolling.value = true,
                   onDragEnd: () => _isFastScrolling.value = false,
+                  groups: _groupedAssets,
+                  crossAxisCount: kIsWeb ? 6 : 4,
+                  labelFormatter: _formatDate,
                   child: CustomScrollView(
                     controller: _scrollController,
-                    physics: const BouncingScrollPhysics(),
+                    physics: const ExponentialBouncingScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
+                    cacheExtent: 2500,
                     slivers: [
                       for (var group in _groupedAssets) ...[
                         SliverPersistentHeader(

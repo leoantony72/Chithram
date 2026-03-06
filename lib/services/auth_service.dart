@@ -23,6 +23,9 @@ class AuthService {
   // Import API config below
   String get _baseUrl => ApiConfig().baseUrl;
 
+  String? get currentUser => _cachedSession?['username'] as String?;
+  String? get currentUserEmail => _cachedSession?['email'] as String?;
+
   Future<void> init() async {
     await _cryptoService.init();
   }
@@ -31,13 +34,15 @@ class AuthService {
   
   // --- Session Persistence ---
   
-  Future<void> saveSession(String username, Uint8List masterKey, Uint8List privateKey, Uint8List publicKey) async {
+  Future<void> saveSession(String username, String email, Uint8List masterKey, Uint8List privateKey, Uint8List publicKey) async {
     await _storage.write(key: 'username', value: username);
+    await _storage.write(key: 'email', value: email);
     await _storage.write(key: 'master_key', value: base64Encode(masterKey));
     await _storage.write(key: 'private_key', value: base64Encode(privateKey));
     await _storage.write(key: 'public_key', value: base64Encode(publicKey));
     _cachedSession = {
       'username': username,
+      'email': email,
       'masterKey': masterKey,
       'privateKey': privateKey,
       'publicKey': publicKey,
@@ -48,13 +53,15 @@ class AuthService {
     if (_cachedSession != null) return _cachedSession;
 
     final user = await _storage.read(key: 'username');
+    final email = await _storage.read(key: 'email');
     final mk = await _storage.read(key: 'master_key');
     final pk = await _storage.read(key: 'private_key');
     final pub = await _storage.read(key: 'public_key');
 
-    if (user != null && mk != null && pk != null && pub != null) {
+    if (user != null && email != null && mk != null && pk != null && pub != null) {
       _cachedSession = {
         'username': user,
+        'email': email,
         'masterKey': base64Decode(mk),
         'privateKey': base64Decode(pk),
         'publicKey': base64Decode(pub),
@@ -169,6 +176,7 @@ class AuthService {
       // Save for persistence
       await saveSession(
         username,
+        email,
         keys['masterKey'] as Uint8List, 
         keys['privateKey'] as Uint8List, 
         keys['publicKey'] as Uint8List

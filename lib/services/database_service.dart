@@ -101,7 +101,8 @@ class DatabaseService {
             create_dt INTEGER,
             modify_dt INTEGER,
             relative_path TEXT,
-            is_favorite INTEGER DEFAULT 0
+            is_favorite INTEGER DEFAULT 0,
+            duration INTEGER DEFAULT 0
           )
         ''');
 
@@ -174,7 +175,9 @@ class DatabaseService {
                     height INTEGER,
                     create_dt INTEGER,
                     modify_dt INTEGER,
-                    relative_path TEXT
+                    relative_path TEXT,
+                    is_favorite INTEGER DEFAULT 0,
+                    duration INTEGER DEFAULT 0
                  )
                ''');
             } catch (_) {}
@@ -189,8 +192,13 @@ class DatabaseService {
                ''');
             } catch (_) {}
           }
+          if (oldVersion < 15) {
+            try {
+               await db.execute('ALTER TABLE local_gallery_index ADD COLUMN duration INTEGER DEFAULT 0');
+            } catch (_) {}
+          }
       },
-      version: 13,
+      version: 15,
     );
   }
 

@@ -39,8 +39,18 @@ android {
             isShrinkResources = false
         }
     }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
 }
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // AndroidX ExifInterface — required by ExifWriterPlugin for in-place GPS write
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 }

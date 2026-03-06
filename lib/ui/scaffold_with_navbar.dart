@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'pages/all_photos_page.dart';
 
 class ScaffoldWithNavBar extends StatefulWidget {
   const ScaffoldWithNavBar({
@@ -15,7 +16,30 @@ class ScaffoldWithNavBar extends StatefulWidget {
 }
 
 class _ScaffoldWithNavBarState extends State<ScaffoldWithNavBar> {
+  DateTime? _lastTapTime;
+  int? _lastTapIndex;
+
   void _onTap(BuildContext context, int index) {
+    final now = DateTime.now();
+    final isDoubleTap = _lastTapIndex == index &&
+        _lastTapTime != null &&
+        now.difference(_lastTapTime!).inMilliseconds < 400;
+
+    _lastTapTime = now;
+    _lastTapIndex = index;
+
+    if (isDoubleTap && index == widget.navigationShell.currentIndex) {
+      // Double-tap on current tab — scroll to top if on Photos
+      if (index == 0 && AllPhotosScrollController.instance.hasClients) {
+        AllPhotosScrollController.instance.animateTo(
+          0,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeOutCubic,
+        );
+      }
+      return;
+    }
+
     widget.navigationShell.goBranch(
       index,
       initialLocation: index == widget.navigationShell.currentIndex,

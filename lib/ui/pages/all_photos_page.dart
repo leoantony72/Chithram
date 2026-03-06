@@ -16,12 +16,21 @@ import '../widgets/section_header_delegate.dart';
 import '../widgets/thumbnail_widget.dart';
 import '../widgets/draggable_scroll_icon.dart';
 import '../widgets/album_cover_widget.dart';
+import '../widgets/gallery_scroll_physics.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../services/backup_service.dart';
 import '../../services/auth_service.dart';
 import 'location_picker_page.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import '../widgets/album_picker_dialog.dart';
+
+/// A globally accessible scroll controller for the main photo grid.
+/// The navbar uses this to scroll-to-top on double-tap without
+/// needing InheritedWidget plumbing across the routing shell.
+class AllPhotosScrollController {
+  AllPhotosScrollController._();
+  static final ScrollController instance = ScrollController();
+}
 
 class AllPhotosPage extends StatefulWidget {
   const AllPhotosPage({super.key});
@@ -36,7 +45,8 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   // 2 = Year View
   final ValueNotifier<double> _scaleNotifier = ValueNotifier(1.0);
   GroupMode _groupMode = GroupMode.month;
-  final ScrollController _scrollController = ScrollController();
+  // Use the global singleton so navbar double-tap can scroll to top
+  final ScrollController _scrollController = AllPhotosScrollController.instance;
 
   // Animation & Gesture state
   late AnimationController _zoomAnimateController;
@@ -233,7 +243,8 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
   @override
   void dispose() {
     _searchDebounce?.cancel();
-    _scrollController.dispose();
+    // NOTE: _scrollController is the AllPhotosScrollController singleton —
+    // do NOT dispose it here; it must stay alive for navbar double-tap.
     _scaleNotifier.dispose();
     _zoomAnimateController.dispose();
     _isFastScrolling.dispose();
@@ -244,6 +255,8 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
 
   void _onScaleStart(ScaleStartDetails details) {
     if (_zoomAnimateController.isAnimating) return;
+    // Only track two-finger pinch gestures
+    if (details.pointerCount < 2) return;
 
     _lastFocalPoint = details.focalPoint;
     final size = MediaQuery.of(context).size;
@@ -257,6 +270,8 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
     if (_zoomAnimateController.isAnimating) return;
+    // Ignore single-finger pan events (pointerCount < 2)
+    if (details.pointerCount < 2) return;
     _scaleNotifier.value = details.scale;
     _lastFocalPoint = details.focalPoint;
   }
@@ -478,17 +493,50 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                         child: Row(
                           children: [
                             Container(
-                              padding: const EdgeInsets.all(12),
+                              width: 50,
+                              height: 50,
                               decoration: BoxDecoration(
-                                color: Colors.blueAccent.withValues(alpha: 0.2),
+                                gradient: const LinearGradient(
+                                  colors: [Colors.blueAccent, Colors.purpleAccent],
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                ),
                                 shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.blueAccent.withValues(alpha: 0.4),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
                               ),
-                              child: const Icon(Icons.cloud_done_rounded, color: Colors.blueAccent, size: 28),
+                              child: Center(
+                                child: Text(
+                                  (AuthService().currentUser?.isNotEmpty == true ? AuthService().currentUser![0] : 'U').toUpperCase(),
+                                  style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                                ),
+                              ),
                             ),
                             const SizedBox(width: 16),
-                            const Text(
-                              'Chithram',
-                              style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    AuthService().currentUser ?? 'Ninta User',
+                                    style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    AuthService().currentUserEmail ?? 'Protected Account',
+                                    style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 13, fontWeight: FontWeight.w500),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
                         ),
@@ -911,10 +959,15 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                     backgroundColor: Colors.grey[900]!.withOpacity(0.8),
                     onDragStart: () => _isFastScrolling.value = true,
                     onDragEnd: () => _isFastScrolling.value = false,
+                    groups: groups,
+                    crossAxisCount: crossAxisCount,
+                    labelFormatter: (date) => _formatDate(date, _groupMode),
                     child: CustomScrollView(
                         controller: _scrollController,
-                        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
-                        cacheExtent: 1500,
+                        physics: const ExponentialBouncingScrollPhysics(
+                          parent: AlwaysScrollableScrollPhysics(),
+                        ),
+                        cacheExtent: 2500,
                         slivers: [
                           SliverToBoxAdapter(
                             child: _buildAlbumsRow(context.read<PhotoProvider>()),
@@ -924,6 +977,7 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                           ),
                           for (var group in groups) ...[
                             SliverPersistentHeader(
+                              key: ValueKey('hdr_${group.date.millisecondsSinceEpoch}_${_groupMode.name}'),
                               pinned: false,
                               delegate: SectionHeaderDelegate(
                                 title: _formatDate(group.date, _groupMode),
@@ -932,21 +986,25 @@ class _AllPhotosPageState extends State<AllPhotosPage> with TickerProviderStateM
                             SliverPadding(
                               padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
                               sliver: SliverGrid(
+                                key: ValueKey('grid_${group.date.millisecondsSinceEpoch}_${_groupMode.name}'),
                                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: crossAxisCount,
-                                  crossAxisSpacing: 4,
-                                  mainAxisSpacing: 4,
+                                  crossAxisSpacing: 2,
+                                  mainAxisSpacing: 2,
                                 ),
                               delegate: SliverChildBuilderDelegate(
                                 (context, index) {
                                   final item = group.items[index];
                                   return ThumbnailWidget(
+                                    key: ValueKey(item.id),
                                     item: item,
                                     isFastScrolling: _isFastScrolling,
                                     heroTagPrefix: 'all_photos',
                                   );
                                 },
                                 childCount: group.items.length,
+                                addRepaintBoundaries: false, // RepaintBoundary is inside ThumbnailWidget
+                                addAutomaticKeepAlives: false,
                               ),
                             ),
                            ),

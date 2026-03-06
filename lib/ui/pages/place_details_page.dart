@@ -123,6 +123,20 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () {
+          final placesVisitedNames = _attractions.map((a) => a.title).take(5).toList();
+          context.push('/trip_planner', extra: {
+             'city': widget.city,
+             'timeCapsuleInfo': timeSpanText,
+             'memoryCountInfo': '${photos.length} memories across $uniqueDays unique days',
+             'placesVisited': placesVisitedNames,
+          });
+        },
+        backgroundColor: Colors.blueAccent,
+        icon: const Icon(Icons.auto_awesome, color: Colors.white),
+        label: const Text("Plan a Trip", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+      ),
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
@@ -136,7 +150,7 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
                 children: [
                   Hero(
                     tag: 'cover_${widget.city}',
-                    child: _buildCoverImage(coverPhoto),
+                    child: _buildCoverImage(coverPhoto, photos),
                   ),
                   const DecoratedBox(
                     decoration: BoxDecoration(
@@ -329,7 +343,16 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
                             margin: const EdgeInsets.symmetric(horizontal: 8),
                             child: ClipRRect(
                                borderRadius: BorderRadius.circular(16),
-                               child: ThumbnailWidget(item: item),
+                               child: ThumbnailWidget(
+                                 item: item, 
+                                 isHighRes: true,
+                                 onTap: () {
+                                   context.push('/viewer', extra: {
+                                     'item': item,
+                                     'items': photos,
+                                   });
+                                 },
+                               ),
                             ),
                          ),
                        );
@@ -538,6 +561,7 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
                               borderRadius: BorderRadius.circular(isSelected ? 8 : 12),
                               child: ThumbnailWidget(
                                  item: item,
+                                 isHighRes: true,
                                  onTap: () {
                                     setState(() {
                                       selectedPhoto = item;
@@ -591,7 +615,16 @@ class _PlaceDetailsPageState extends State<PlaceDetailsPage> {
      );
   }
 
-  Widget _buildCoverImage(GalleryItem item) {
-    return ThumbnailWidget(item: item, isHighRes: true);
+  Widget _buildCoverImage(GalleryItem item, List<GalleryItem> items) {
+    return ThumbnailWidget(
+      item: item, 
+      isHighRes: true,
+      onTap: () {
+        context.push('/viewer', extra: {
+          'item': item,
+          'items': items,
+        });
+      },
+    );
   }
 }
