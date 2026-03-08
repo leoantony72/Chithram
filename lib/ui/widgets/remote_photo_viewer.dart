@@ -23,13 +23,16 @@ class RemotePhotoViewer extends StatefulWidget {
   State<RemotePhotoViewer> createState() => _RemotePhotoViewerState();
 }
 
-class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKeepAliveClientMixin {
+class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKeepAliveClientMixin, TickerProviderStateMixin {
   Uint8List? _originalBytes;
   Uint8List? _thumbBytes;
   bool _isLoading = false;
   String? _error;
 
   final GlobalKey<ExtendedImageGestureState> _gestureKey = GlobalKey<ExtendedImageGestureState>();
+  AnimationController? _doubleClickAnimationController;
+  Animation<double>? _doubleClickAnimation;
+  late VoidCallback _doubleClickAnimationListener;
 
   @override
   bool get wantKeepAlive => true;
@@ -37,7 +40,15 @@ class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKee
   @override
   void initState() {
     super.initState();
+    _doubleClickAnimationController = AnimationController(
+        duration: const Duration(milliseconds: 200), vsync: this);
     _loadImages();
+  }
+
+  @override
+  void dispose() {
+    _doubleClickAnimationController?.dispose();
+    super.dispose();
   }
 
   Future<void> _loadImages() async {
@@ -128,14 +139,31 @@ class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKee
         extendedImageGestureKey: _gestureKey,
         gaplessPlayback: true,
         onDoubleTap: (ExtendedImageGestureState state) {
-          final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
-          double targetScale = 1.0;
-          if (beginScale <= 1.001) targetScale = 3.0;
+          final pointerDownPosition = state.pointerDownPosition;
+          final begin = state.gestureDetails?.totalScale ?? 1.0;
+          double end;
 
-          state.handleDoubleTap(
-            scale: targetScale,
-            doubleTapPosition: state.pointerDownPosition,
-          );
+          _doubleClickAnimation?.removeListener(_doubleClickAnimationListener);
+          _doubleClickAnimationController?.stop();
+          _doubleClickAnimationController?.reset();
+
+          if (begin <= 1.001) {
+            end = 3.0; // Zoom in
+          } else {
+            end = 1.0; // Zoom out
+          }
+
+          _doubleClickAnimationListener = () {
+            state.handleDoubleTap(
+                scale: _doubleClickAnimation?.value,
+                doubleTapPosition: pointerDownPosition);
+          };
+
+          _doubleClickAnimation = _doubleClickAnimationController
+              ?.drive(Tween<double>(begin: begin, end: end));
+              
+          _doubleClickAnimation?.addListener(_doubleClickAnimationListener);
+          _doubleClickAnimationController?.forward();
         },
         initGestureConfigHandler: (state) {
           return GestureConfig(
@@ -163,10 +191,31 @@ class _RemotePhotoViewerState extends State<RemotePhotoViewer> with AutomaticKee
             fit: BoxFit.contain,
             mode: ExtendedImageMode.gesture,
             onDoubleTap: (ExtendedImageGestureState state) {
-               final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
-               double targetScale = 1.0;
-               if (beginScale <= 1.001) targetScale = 3.0;
-               state.handleDoubleTap(scale: targetScale, doubleTapPosition: state.pointerDownPosition);
+                final pointerDownPosition = state.pointerDownPosition;
+                final begin = state.gestureDetails?.totalScale ?? 1.0;
+                double end;
+
+                _doubleClickAnimation?.removeListener(_doubleClickAnimationListener);
+                _doubleClickAnimationController?.stop();
+                _doubleClickAnimationController?.reset();
+
+                if (begin <= 1.001) {
+                  end = 3.0; // Zoom in
+                } else {
+                  end = 1.0; // Zoom out
+                }
+
+                _doubleClickAnimationListener = () {
+                  state.handleDoubleTap(
+                      scale: _doubleClickAnimation?.value,
+                      doubleTapPosition: pointerDownPosition);
+                };
+
+                _doubleClickAnimation = _doubleClickAnimationController
+                    ?.drive(Tween<double>(begin: begin, end: end));
+                    
+                _doubleClickAnimation?.addListener(_doubleClickAnimationListener);
+                _doubleClickAnimationController?.forward();
             },
             initGestureConfigHandler: (state) => GestureConfig(
               inPageView: true, 

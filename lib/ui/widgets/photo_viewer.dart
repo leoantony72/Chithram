@@ -19,14 +19,25 @@ class PhotoViewer extends StatefulWidget {
   State<PhotoViewer> createState() => _PhotoViewerState();
 }
 
-class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClientMixin {
+class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClientMixin, TickerProviderStateMixin {
   Uint8List? _placeholderBytes;
+  AnimationController? _doubleClickAnimationController;
+  Animation<double>? _doubleClickAnimation;
+  late VoidCallback _doubleClickAnimationListener;
 
   @override
   void initState() {
     super.initState();
     // Grab the low-res thumb from the cache for immediate display
     _placeholderBytes = ThumbnailCache().getMemory(widget.asset.id);
+    _doubleClickAnimationController = AnimationController(
+        duration: const Duration(milliseconds: 200), vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _doubleClickAnimationController?.dispose();
+    super.dispose();
   }
 
   @override
@@ -108,19 +119,33 @@ class _PhotoViewerState extends State<PhotoViewer> with AutomaticKeepAliveClient
         gaplessPlayback: true, 
         enableSlideOutPage: false,
         onDoubleTap: (ExtendedImageGestureState state) {
-          final double beginScale = state.gestureDetails?.totalScale ?? 1.0;
-          double targetScale = 1.0;
+          final pointerDownPosition = state.pointerDownPosition;
+          final begin = state.gestureDetails?.totalScale ?? 1.0;
+          double end;
 
-          if (beginScale <= 1.001) {
-            targetScale = 3.0; // Zoom in
+          _doubleClickAnimation?.removeListener(_doubleClickAnimationListener);
+          _doubleClickAnimationController?.stop();
+          _doubleClickAnimationController?.reset();
+
+          if (begin <= 1.001) {
+            end = 3.0; // Zoom in
+          } else {
+            end = 1.0; // Zoom out
           }
 
-          state.handleDoubleTap(
-            scale: targetScale,
-            doubleTapPosition: state.pointerDownPosition,
-          );
+          _doubleClickAnimationListener = () {
+            state.handleDoubleTap(
+                scale: _doubleClickAnimation?.value,
+                doubleTapPosition: pointerDownPosition);
+          };
 
-          if (targetScale > 1.0 && !_allowOriginal) {
+          _doubleClickAnimation = _doubleClickAnimationController
+              ?.drive(Tween<double>(begin: begin, end: end));
+              
+          _doubleClickAnimation?.addListener(_doubleClickAnimationListener);
+          _doubleClickAnimationController?.forward();
+
+          if (end > 1.0 && !_allowOriginal) {
              Future.delayed(const Duration(milliseconds: 150), () {
                if (mounted) setState(() => _allowOriginal = true);
              });

@@ -164,47 +164,13 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
                 _showUI = !_showUI;
               });
             },
-            // Swipe-down-to-dismiss — only on mobile touch
-            onVerticalDragStart: (details) {
-              setState(() {
-                _isDraggingDown = true;
-                _dragOffset = 0.0;
-              });
-            },
-            onVerticalDragUpdate: (details) {
-              // Only allow downward drag (positive dy)
-              if (!_isDraggingDown) return;
-              final newOffset = (_dragOffset + details.delta.dy).clamp(0.0, 400.0);
-              setState(() => _dragOffset = newOffset);
-            },
-            onVerticalDragEnd: (details) {
-              final velocity = details.primaryVelocity ?? 0;
-              if (_dragOffset >= _kDismissThreshold || velocity > 600) {
-                // Dismiss
-                context.pop();
-              } else {
-                // Spring back
-                setState(() {
-                  _isDraggingDown = false;
-                  _dragOffset = 0.0;
-                });
-              }
-            },
-            onVerticalDragCancel: () {
-              setState(() {
-                _isDraggingDown = false;
-                _dragOffset = 0.0;
-              });
-            },
             behavior: HitTestBehavior.deferToChild,
             child: AnimatedContainer(
-              duration: _isDraggingDown
-                  ? Duration.zero
-                  : const Duration(milliseconds: 250),
+              duration: const Duration(milliseconds: 250),
               curve: Curves.easeOutCubic,
-              transform: Matrix4.translationValues(0, _dragOffset, 0),
+              transform: Matrix4.translationValues(0, 0, 0),
               child: Opacity(
-                opacity: (1.0 - _dragOffset / 350.0).clamp(0.4, 1.0),
+                opacity: 1.0,
                 child: Stack(
                   children: [
                     ScrollConfiguration(
@@ -325,22 +291,22 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
                                   onSelected: (value) async {
                                     if (value == 'About') {
                                       _showDetails(context, currentItem);
-                                    } else if (value == 'ShareWithUser' && currentItem.type == GalleryItemType.remote) {
+                                    } else if (value == 'ShareWithUser') {
                                       await _showShareWithUserDialog(context, currentItem);
                                     }
                                   },
-                                  itemBuilder: (BuildContext context) => [
-                                    const PopupMenuItem(
-                                      value: 'About',
-                                      child: Row(
-                                        children: [
-                                          Icon(Icons.info_outline, color: Colors.black87),
-                                          SizedBox(width: 8),
-                                          Text('About'),
-                                        ],
+                                  itemBuilder: (BuildContext context) {
+                                    return [
+                                      const PopupMenuItem(
+                                        value: 'About',
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.info_outline, color: Colors.black87),
+                                            SizedBox(width: 8),
+                                            Text('About'),
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                    if (currentItem.type == GalleryItemType.remote)
                                       const PopupMenuItem(
                                         value: 'ShareWithUser',
                                         child: Row(
@@ -351,7 +317,8 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
                                           ],
                                         ),
                                       ),
-                                  ],
+                                    ];
+                                  },
                                 ),
                               ],
                             ),
@@ -428,31 +395,52 @@ class _AssetViewerPageState extends State<AssetViewerPage> {
   }
 
   Future<void> _showShareWithUserDialog(BuildContext context, GalleryItem item) async {
-    if (item.type != GalleryItemType.remote) return;
-
-    final remote = item.remote!;
     final session = await AuthService().loadSession();
     if (session == null) return;
 
     final masterKey = SecureKey.fromList(CryptoService().sodium, session['masterKey'] as Uint8List);
+
+    String imageId;
+    int? w, h;
+    Future<Uint8List?> Function() fetchImageBytes;
+
+    if (item.type == GalleryItemType.remote) {
+      final remote = item.remote!;
+      imageId = remote.imageId;
+      w = remote.width;
+      h = remote.height;
+      fetchImageBytes = () => BackupService().fetchAndDecryptFromUrl(remote.originalUrl, masterKey);
+    } else {
+      final local = item.local!;
+      imageId = local.id;
+      w = local.width;
+      h = local.height;
+      fetchImageBytes = () async {
+        final file = await local.file;
+        if (file == null) return null;
+        return file.readAsBytes();
+      };
+    }
+
+    if (!context.mounted) return;
 
     final success = await showModalBottomSheet<bool>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (ctx) => ShareWithUserSheet(
-        imageId: remote.imageId,
-        width: remote.width,
-        height: remote.height,
-        fetchImageBytes: () => BackupService().fetchAndDecryptFromUrl(remote.originalUrl, masterKey),
-        onCreateShare: (receiverUsername, shareType, imageBytes, w, h) =>
+        imageId: imageId,
+        width: w,
+        height: h,
+        fetchImageBytes: fetchImageBytes,
+        onCreateShare: (receiverUsername, shareType, imageBytes, shareW, shareH) =>
             ShareService().createShare(
               receiverUsername: receiverUsername,
-              imageId: remote.imageId,
+              imageId: imageId,
               shareType: shareType,
               imageBytes: imageBytes,
-              width: w,
-              height: h,
+              width: shareW,
+              height: shareH,
             ),
       ),
     );

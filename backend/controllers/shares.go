@@ -53,13 +53,6 @@ func CreateShare(c *gin.Context) {
 		return
 	}
 
-	// Verify sender owns the image
-	var img models.Image
-	if err := database.DB.Where("image_id = ? AND user_id = ? AND is_deleted = ?", input.ImageID, senderID, false).First(&img).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Image not found or you don't own it"})
-		return
-	}
-
 	shareID := uuid.New().String()
 	share := models.Share{
 		ID:                shareID,
